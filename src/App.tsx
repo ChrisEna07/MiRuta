@@ -4,12 +4,11 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   Send,
   MapPin,
-  Grid,
   Search,
-  History,
   FileSpreadsheet,
   Settings,
-  Sparkles,
+  History,
+  X
 } from 'lucide-react';
 import { db, getTodayShiftId, ensureShiftExists } from './db/database';
 import { seedMedellinDemoBatch } from './utils/demoSeeder';
@@ -23,16 +22,18 @@ import { QuincenaAccountingView } from './components/QuincenaAccountingView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { ScannerModal } from './components/ScannerModal';
 import { ScannerTestLabModal } from './components/ScannerTestLabModal';
+import { QuickSearchModal } from './components/QuickSearchModal';
 import { FeedbackProvider } from './components/ui/FeedbackSystem';
 
-type ActiveTab = 'pilot' | 'route' | 'more';
-type MoreSubTab = 'history' | 'quincena' | 'settings' | 'menu';
+// Pestañas Estrictamente Aisladas v9.0 (Cero Mezcla de Componentes ni Scroll Infinito)
+type ActiveTab = 'pilot' | 'route' | 'quincena' | 'settings';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('pilot');
-  const [moreSubTab, setMoreSubTab] = useState<MoreSubTab>('menu');
   const [scannerOpen, setScannerOpen] = useState<boolean>(false);
   const [testLabOpen, setTestLabOpen] = useState<boolean>(false);
+  const [searchModalOpen, setSearchModalOpen] = useState<boolean>(false);
+  const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [highContrastSun, setHighContrastSun] = useState<boolean>(false);
 
   const todayShiftId = getTodayShiftId();
@@ -67,308 +68,301 @@ export function App() {
   return (
     <FeedbackProvider>
       <div
-        className={`min-h-[100dvh] w-full pb-36 transition-colors touch-pan-y ${
+        className={`min-h-[100dvh] w-full pb-32 transition-colors touch-pan-y ${
           highContrastSun
             ? 'bg-slate-100 text-slate-950'
             : 'bg-slate-950 text-slate-50'
         }`}
       >
-      {/* 1. Header Dinámico MiRuta by Christian Romero */}
-      <DynamicHeader
-        highContrastSun={highContrastSun}
-        onToggleContrast={() => setHighContrastSun((prev) => !prev)}
-      />
+        {/* Header Dinámico MiRuta by Christian Romero */}
+        <DynamicHeader
+          highContrastSun={highContrastSun}
+          onToggleContrast={() => setHighContrastSun((prev) => !prev)}
+        />
 
-      {/* 2. Tarjeta Superior Oficial iMile: Tareas de Hoy, Barra de Progreso y Operaciones Rápidas */}
-      <IMileTodayTasksCard
-        packages={todayPackages}
-        highContrastSun={highContrastSun}
-        onOpenScanner={() => setScannerOpen(true)}
-        onOpenIssueScanner={() => setScannerOpen(true)}
-        onOpenSearch={() => setActiveTab('route')}
-        onSelectFilter={(filter) => {
-          if (filter === 'all' || filter === 'pending') {
-            setActiveTab('pilot');
-          } else {
-            setActiveTab('route');
-          }
-        }}
-      />
-
-      {/* 3. Medidor de Desempeño, Semáforo y Cierre de Jornada */}
-      <ProfitabilityMeter
-        packages={todayPackages}
-        shift={todayShift}
-        highContrastSun={highContrastSun}
-      />
-
-      {/* Contenido Principal con Transiciones Fluidas Framer Motion */}
-      <main className="mt-1">
-        <AnimatePresence mode="wait">
-          {activeTab === 'pilot' && (
-            <motion.div
-              key="pilot"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.16 }}
-            >
-              <PilotModeView
-                packages={todayPackages}
-                highContrastSun={highContrastSun}
-                onOpenScanner={() => setScannerOpen(true)}
-              />
-            </motion.div>
-          )}
-
-          {activeTab === 'route' && (
-            <motion.div
-              key="route"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.16 }}
-            >
-              <RouteOptimizerView
-                packages={todayPackages}
-                highContrastSun={highContrastSun}
-                onOpenScanner={() => setScannerOpen(true)}
-              />
-            </motion.div>
-          )}
-
-          {activeTab === 'more' && (
-            <motion.div
-              key="more"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.16 }}
-              className="max-w-lg mx-auto px-4 py-2 space-y-3"
-            >
-              {/* Barra de Sub-Navegación para "Más" */}
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-slate-900 border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setMoreSubTab('history')}
-                  className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-colors ${
-                    moreSubTab === 'history'
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <History className="w-3.5 h-3.5" />
-                  <span>Historial</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMoreSubTab('quincena')}
-                  className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-colors ${
-                    moreSubTab === 'quincena'
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5" />
-                  <span>Quincena</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMoreSubTab('settings')}
-                  className={`py-2 px-2 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-colors ${
-                    moreSubTab === 'settings'
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  <span>Ajustes</span>
-                </button>
-              </div>
-
-              {moreSubTab === 'history' && (
-                <TraceabilityHistoryView highContrastSun={highContrastSun} />
-              )}
-              {moreSubTab === 'quincena' && (
-                <QuincenaAccountingView highContrastSun={highContrastSun} />
-              )}
-              {moreSubTab === 'settings' && (
-                <SettingsBackupView
+        {/* Contenido Principal con Aislamiento Estricto por Vistas (v9.0) */}
+        <main className="mt-1">
+          <AnimatePresence mode="wait">
+            {/* 1. PESTAÑA: ENTREGA / TAREAS (IMileTodayTasksCard + PilotModeView) */}
+            {activeTab === 'pilot' && (
+              <motion.div
+                key="pilot"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.16 }}
+                className="space-y-3"
+              >
+                {/* Tareas de Hoy estilo iMile + Operaciones Rápidas */}
+                <IMileTodayTasksCard
+                  packages={todayPackages}
                   highContrastSun={highContrastSun}
-                  onOpenTestLab={() => setTestLabOpen(true)}
+                  onOpenScanner={() => setScannerOpen(true)}
+                  onOpenIssueScanner={() => setScannerOpen(true)}
+                  onOpenSearch={() => setSearchModalOpen(true)}
+                  onSelectFilter={(filter) => {
+                    if (filter === 'all' || filter === 'pending') {
+                      setActiveTab('pilot');
+                    } else {
+                      setActiveTab('route');
+                    }
+                  }}
                 />
-              )}
-              {moreSubTab === 'menu' && (
-                <div className="space-y-2 pt-2">
+
+                {/* Modo Piloto: Cronómetro de Jornada, Pausas, Parada Actual con Waze y Badges */}
+                <PilotModeView
+                  packages={todayPackages}
+                  highContrastSun={highContrastSun}
+                  onOpenScanner={() => setScannerOpen(true)}
+                />
+              </motion.div>
+            )}
+
+            {/* 2. PESTAÑA: MAPA Y RUTA (RouteOptimizerView) */}
+            {activeTab === 'route' && (
+              <motion.div
+                key="route"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.16 }}
+              >
+                <RouteOptimizerView
+                  packages={todayPackages}
+                  highContrastSun={highContrastSun}
+                  onOpenScanner={() => setScannerOpen(true)}
+                />
+              </motion.div>
+            )}
+
+            {/* 3. PESTAÑA: QUINCENA & DESEMPEÑO (ProfitabilityMeter + QuincenaAccountingView) */}
+            {activeTab === 'quincena' && (
+              <motion.div
+                key="quincena"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.16 }}
+                className="space-y-3.5"
+              >
+                {/* Semáforo de Desempeño, Ritmo paq/h y Meta $600k COP */}
+                <ProfitabilityMeter
+                  packages={todayPackages}
+                  shift={todayShift}
+                  highContrastSun={highContrastSun}
+                />
+
+                {/* Auditoría y Liquidación Quincenal para Christian y PDF Sr. Juan */}
+                <QuincenaAccountingView highContrastSun={highContrastSun} />
+              </motion.div>
+            )}
+
+            {/* 4. PESTAÑA: AJUSTES & BÓVEDA (SettingsBackupView) */}
+            {activeTab === 'settings' && (
+              <motion.div
+                key="settings"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.16 }}
+                className="space-y-3"
+              >
+                {/* Botón rápido para ver Historial de Trazabilidad */}
+                <div className="max-w-lg mx-auto px-4 pt-1">
                   <button
                     type="button"
-                    onClick={() => setMoreSubTab('history')}
-                    className="w-full p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between text-left hover:bg-slate-800 transition-colors"
+                    onClick={() => setShowHistoryModal(true)}
+                    className="w-full p-3.5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-slate-700 flex items-center justify-between text-left transition-all active:scale-[0.99] cursor-pointer"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-blue-500/20 text-blue-400">
+                      <div className="p-2 rounded-xl bg-blue-500/20 text-blue-400">
                         <History className="w-5 h-5" />
                       </div>
                       <div>
                         <p className="font-black text-sm text-white">Historial y Trazabilidad</p>
-                        <p className="text-xs text-slate-400">Auditoría completa de paquetes entregados</p>
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setMoreSubTab('quincena')}
-                    className="w-full p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between text-left hover:bg-slate-800 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400">
-                        <FileSpreadsheet className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <p className="font-black text-sm text-white">Liquidación Quincena & Sr. Juan</p>
-                        <p className="text-xs text-slate-400">Auditoría de ingresos vs. deducciones</p>
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setMoreSubTab('settings')}
-                    className="w-full p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between text-left hover:bg-slate-800 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-400">
-                        <Settings className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <p className="font-black text-sm text-white">Ajustes & Backups Bóveda</p>
-                        <p className="text-xs text-slate-400">Restauración, borrar datos y Supabase</p>
+                        <p className="text-xs text-slate-400">Consultar entregas anteriores y fechas pasadas</p>
                       </div>
                     </div>
                   </button>
                 </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </main>
 
-      {/* Modal de Escaneo Inteligente */}
-      <ScannerModal
-        isOpen={scannerOpen}
-        onClose={() => setScannerOpen(false)}
-        onOpenTestLab={() => setTestLabOpen(true)}
-        highContrastSun={highContrastSun}
-      />
+                <SettingsBackupView
+                  highContrastSun={highContrastSun}
+                  onOpenTestLab={() => setTestLabOpen(true)}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </main>
 
-      {/* Modal de Laboratorio de Pruebas y Benchmark de Escáner */}
-      <ScannerTestLabModal
-        isOpen={testLabOpen}
-        onClose={() => setTestLabOpen(false)}
-        highContrastSun={highContrastSun}
-      />
+        {/* Modal de Búsqueda Reactiva Rápida de Guías (v9.0) */}
+        <QuickSearchModal
+          isOpen={searchModalOpen}
+          onClose={() => setSearchModalOpen(false)}
+          onSelectPackage={(pkg) => {
+            if (pkg.status === 'pending' || pkg.status === 'in_progress') {
+              setActiveTab('pilot');
+            } else {
+              setActiveTab('route');
+            }
+          }}
+          highContrastSun={highContrastSun}
+        />
 
-      {/* Barra de Navegación Inferior Estilo iMile Real (3 Pestañas: Entrega, Mapa, Más + Búsqueda Rápida) */}
-      <nav
-        className={`fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-xl pb-safe transition-colors ${
-          highContrastSun
-            ? 'bg-white/95 border-slate-300 text-slate-900 shadow-2xl'
-            : 'bg-slate-950/95 border-slate-800/90 text-slate-300 shadow-2xl'
-        }`}
-      >
-        <div className="max-w-lg mx-auto px-4 py-2 relative">
-          <div className="grid grid-cols-3 items-center">
-            {/* Pestaña 1: Entrega (Avión de papel / Ruta activa) */}
-            <button
-              type="button"
-              onClick={() => setActiveTab('pilot')}
-              className={`py-1.5 px-3 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${
-                activeTab === 'pilot'
-                  ? 'text-blue-500 font-black'
-                  : 'text-slate-400 hover:text-slate-200 font-bold'
-              }`}
-            >
-              <div
-                className={`p-1.5 rounded-xl transition-all ${
+        {/* Modal de Historial de Trazabilidad */}
+        {showHistoryModal && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4 touch-scroll-y">
+            <div className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-700 p-4 max-h-[90dvh] overflow-y-auto space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <h3 className="text-base font-black text-white flex items-center gap-2">
+                  <History className="w-5 h-5 text-blue-400" />
+                  <span>Historial de Trazabilidad</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowHistoryModal(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <TraceabilityHistoryView highContrastSun={highContrastSun} />
+            </div>
+          </div>
+        )}
+
+        {/* Modal de Escaneo Inteligente */}
+        <ScannerModal
+          isOpen={scannerOpen}
+          onClose={() => setScannerOpen(false)}
+          onOpenTestLab={() => setTestLabOpen(true)}
+          highContrastSun={highContrastSun}
+        />
+
+        {/* Modal de Laboratorio de Pruebas y Benchmark de Escáner */}
+        <ScannerTestLabModal
+          isOpen={testLabOpen}
+          onClose={() => setTestLabOpen(false)}
+          highContrastSun={highContrastSun}
+        />
+
+        {/* Barra de Navegación Inferior Fija v9.0 (4 Pestañas Aisladas + Botón Buscar) */}
+        <nav
+          className={`fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-xl pb-safe transition-colors ${
+            highContrastSun
+              ? 'bg-white/95 border-slate-300 text-slate-900 shadow-2xl'
+              : 'bg-slate-950/95 border-slate-800/90 text-slate-300 shadow-2xl'
+          }`}
+        >
+          <div className="max-w-lg mx-auto px-4 py-2 relative">
+            <div className="grid grid-cols-4 items-center">
+              {/* Pestaña 1: Entrega / Piloto */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('pilot')}
+                className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
                   activeTab === 'pilot'
-                    ? 'bg-blue-600/20 text-blue-400 scale-110'
-                    : 'text-slate-400'
+                    ? 'text-blue-400 font-black'
+                    : 'text-slate-400 hover:text-slate-200 font-bold'
                 }`}
               >
-                <Send className="w-5 h-5 -rotate-45" />
-              </div>
-              <span className="text-[11px] leading-tight">Entrega</span>
-            </button>
+                <div
+                  className={`p-1.5 rounded-xl transition-all ${
+                    activeTab === 'pilot'
+                      ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  <Send className="w-5 h-5 -rotate-45" />
+                </div>
+                <span className="text-[10px] leading-tight">Entrega</span>
+              </button>
 
-            {/* Pestaña 2: Mapa / Ruta (Pin de ubicación / Lista de Paradas) */}
-            <button
-              type="button"
-              onClick={() => setActiveTab('route')}
-              className={`py-1.5 px-3 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${
-                activeTab === 'route'
-                  ? 'text-blue-500 font-black'
-                  : 'text-slate-400 hover:text-slate-200 font-bold'
-              }`}
-            >
-              <div
-                className={`p-1.5 rounded-xl transition-all ${
+              {/* Pestaña 2: Mapa y Ruta */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('route')}
+                className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
                   activeTab === 'route'
-                    ? 'bg-blue-600/20 text-blue-400 scale-110'
-                    : 'text-slate-400'
+                    ? 'text-blue-400 font-black'
+                    : 'text-slate-400 hover:text-slate-200 font-bold'
                 }`}
               >
-                <MapPin className="w-5 h-5" />
-              </div>
-              <span className="text-[11px] leading-tight">
-                Mapa ({pendingCount})
-              </span>
-            </button>
+                <div
+                  className={`p-1.5 rounded-xl transition-all ${
+                    activeTab === 'route'
+                      ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  <MapPin className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] leading-tight">
+                  Ruta {pendingCount > 0 ? `(${pendingCount})` : ''}
+                </span>
+              </button>
 
-            {/* Pestaña 3: Más (Grid / Ajustes, Historial, Quincena) */}
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('more');
-                setMoreSubTab('menu');
-              }}
-              className={`py-1.5 px-3 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${
-                activeTab === 'more'
-                  ? 'text-blue-500 font-black'
-                  : 'text-slate-400 hover:text-slate-200 font-bold'
-              }`}
-            >
-              <div
-                className={`p-1.5 rounded-xl transition-all ${
-                  activeTab === 'more'
-                    ? 'bg-blue-600/20 text-blue-400 scale-110'
-                    : 'text-slate-400'
+              {/* Pestaña 3: Quincena & Desempeño */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('quincena')}
+                className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
+                  activeTab === 'quincena'
+                    ? 'text-blue-400 font-black'
+                    : 'text-slate-400 hover:text-slate-200 font-bold'
                 }`}
               >
-                <Grid className="w-5 h-5" />
-              </div>
-              <span className="text-[11px] leading-tight">Más</span>
-            </button>
-          </div>
+                <div
+                  className={`p-1.5 rounded-xl transition-all ${
+                    activeTab === 'quincena'
+                      ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] leading-tight">Quincena</span>
+              </button>
 
-          {/* Botón Flotante Rápido de Búsqueda de Entrega estilo iMile */}
-          <div className="absolute right-4 -top-12 sm:-top-14">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('route');
-              }}
-              title="Búsqueda de Entrega"
-              className="px-3.5 py-2 rounded-2xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-white font-black text-xs flex items-center gap-1.5 shadow-xl active:scale-95 transition-transform"
-            >
-              <Search className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">Buscar</span>
-              <span className="font-mono text-emerald-400 font-black">#Guía</span>
-            </button>
+              {/* Pestaña 4: Ajustes */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
+                  activeTab === 'settings'
+                    ? 'text-blue-400 font-black'
+                    : 'text-slate-400 hover:text-slate-200 font-bold'
+                }`}
+              >
+                <div
+                  className={`p-1.5 rounded-xl transition-all ${
+                    activeTab === 'settings'
+                      ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  <Settings className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] leading-tight">Ajustes</span>
+              </button>
+            </div>
+
+            {/* Botón Flotante de Búsqueda Rápida de Guía (#4) */}
+            <div className="absolute right-4 -top-12 sm:-top-13">
+              <button
+                type="button"
+                onClick={() => setSearchModalOpen(true)}
+                title="Búsqueda Rápida de Guías"
+                className="px-3.5 py-2 rounded-2xl bg-slate-900/95 hover:bg-slate-800 border border-amber-500/50 text-white font-black text-xs flex items-center gap-1.5 shadow-xl active:scale-95 transition-transform cursor-pointer"
+              >
+                <Search className="w-4 h-4 text-amber-400" />
+                <span>Buscar</span>
+                <span className="font-mono text-amber-400 font-black">#Guía</span>
+              </button>
+            </div>
           </div>
-        </div>
-      </nav>
-    </div>
+        </nav>
+      </div>
     </FeedbackProvider>
   );
 }
