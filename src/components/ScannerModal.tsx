@@ -108,6 +108,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [hasScannedAttempt, setHasScannedAttempt] = useState<boolean>(false);
 
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
+  const [activeVoiceField, setActiveVoiceField] = useState<'all' | 'tracking' | 'address' | 'recipient' | 'phone' | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'ready'>('idle');
   const [packageSize, setPackageSize] = useState<'small' | 'medium' | 'large'>('medium');
 
@@ -474,7 +475,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     e.target.value = '';
   };
 
-  const handleToggleVoiceCapture = () => {
+  const handleToggleVoiceCapture = (field: 'all' | 'tracking' | 'address' | 'recipient' | 'phone' = 'all') => {
     const SpeechRecognitionAPI =
       (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown })
         .SpeechRecognition ||
@@ -488,8 +489,9 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       return;
     }
 
-    if (isListeningVoice) {
+    if (isListeningVoice && activeVoiceField === field) {
       setIsListeningVoice(false);
+      setActiveVoiceField(null);
       return;
     }
 
@@ -501,29 +503,65 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       recognition.maxAlternatives = 1;
 
       setIsListeningVoice(true);
+      setActiveVoiceField(field);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       recognition.onresult = (event: any) => {
         const transcript = event.results?.[0]?.[0]?.transcript || '';
         if (transcript) {
-          setSmartBlockText(transcript);
-          applySmartBlockParse(transcript);
-          toast.info('🎙️ Texto capturado por voz', transcript);
+          if (typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate(40);
+          }
+          playScannerLaserBeep();
+
+          if (field === 'tracking') {
+            const cleanDigits = transcript.replace(/\D/g, '');
+            if (cleanDigits) {
+              setTrackingNumber(cleanDigits);
+              setAutoFilledFields((prev) => ({ ...prev, trackingNumber: true }));
+              toast.success(`🎙️ Guía dictada: #${cleanDigits.slice(-4)}`);
+            } else {
+              toast.warning('⚠️ No se reconocieron números de guía');
+            }
+          } else if (field === 'address') {
+            setRawAddress(transcript);
+            setAutoFilledFields((prev) => ({ ...prev, rawAddress: true }));
+            toast.success('🎙️ Dirección dictada', transcript);
+          } else if (field === 'recipient') {
+            const cleanName = transcript.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, '').trim();
+            setRecipientName(cleanName || transcript);
+            setAutoFilledFields((prev) => ({ ...prev, recipientName: true }));
+            toast.success('🎙️ Destinatario dictado', cleanName || transcript);
+          } else if (field === 'phone') {
+            const formatted = validateAndFormatColombianPhone(transcript);
+            setRecipientPhone(formatted.formatted);
+            setAutoFilledFields((prev) => ({ ...prev, recipientPhone: true }));
+            toast.success('🎙️ Celular dictado', formatted.formatted);
+          } else {
+            // Dictado general de bloque "all"
+            setSmartBlockText(transcript);
+            applySmartBlockParse(transcript);
+            toast.info('🎙️ Texto capturado por voz', transcript);
+          }
         }
         setIsListeningVoice(false);
+        setActiveVoiceField(null);
       };
 
       recognition.onerror = () => {
         setIsListeningVoice(false);
+        setActiveVoiceField(null);
       };
 
       recognition.onend = () => {
         setIsListeningVoice(false);
+        setActiveVoiceField(null);
       };
 
       recognition.start();
     } catch {
       setIsListeningVoice(false);
+      setActiveVoiceField(null);
     }
   };
 
@@ -1070,7 +1108,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
               <button
                 type="button"
-                onClick={handleToggleVoiceCapture}
+                onClick={() => handleToggleVoiceCapture('all')}
                 className={`px-2.5 py-1 rounded-xl text-[10px] font-black flex items-center gap-1 transition-all ${
                   isListeningVoice
                     ? 'bg-rose-600 text-white animate-pulse'
@@ -1122,11 +1160,28 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                   <Hash className="w-3.5 h-3.5 text-blue-400" />
                   GUÍA IMILE (13 DÍGITOS)
                 </label>
-                {autoFilledFields.trackingNumber && (
-                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                    ✨ Auto
-                  </span>
-                )}
+                <div className="flex items-center gap-1">
+                  {autoFilledFields.trackingNumber && (
+                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      ✨ Auto
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleToggleVoiceCapture('tracking')}
+                    className={`p-1 rounded-lg text-[10px] font-bold flex items-center gap-0.5 transition-all ${
+                      isListeningVoice && activeVoiceField === 'tracking'
+                        ? 'bg-rose-600 text-white animate-pulse'
+                        : 'bg-slate-800 text-slate-300 hover:text-white'
+                    }`}
+                    title="Dictar número de guía"
+                  >
+                    <Mic className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="hidden sm:inline">
+                      {isListeningVoice && activeVoiceField === 'tracking' ? 'Escuchando...' : 'Dictar'}
+                    </span>
+                  </button>
+                </div>
               </div>
               <input
                 type="text"
@@ -1134,7 +1189,9 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 onChange={(e) => setTrackingNumber(sanitizeTrackingInput(e.target.value))}
                 placeholder="Ej: 6103026696672"
                 className={`w-full rounded-xl px-3 py-2.5 text-sm font-mono font-bold border focus:outline-none focus:ring-2 transition-colors ${
-                  duplicateTodayPkg
+                  isListeningVoice && activeVoiceField === 'tracking'
+                    ? 'border-rose-500 ring-2 ring-rose-500/30'
+                    : duplicateTodayPkg
                     ? 'border-amber-500 focus:ring-amber-500'
                     : autoFilledFields.trackingNumber
                     ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
@@ -1189,15 +1246,32 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 <MapPin className="w-3.5 h-3.5 text-emerald-400" />
                 DIRECCIÓN DE ENTREGA (MEDELLÍN) *
               </label>
-              {autoFilledFields.rawAddress && isAddressComplete ? (
-                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                  ✨ Autocompletado
-                </span>
-              ) : hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete) ? (
-                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-amber-500/25 text-amber-300 border border-amber-400/60 animate-pulse">
-                  ⚠️ Revisa esta dirección antes de guardar
-                </span>
-              ) : null}
+              <div className="flex items-center gap-1">
+                {autoFilledFields.rawAddress && isAddressComplete ? (
+                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    ✨ Autocompletado
+                  </span>
+                ) : hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete) ? (
+                  <span className="text-[9px] font-black px-2 py-0.5 rounded bg-amber-500/25 text-amber-300 border border-amber-400/60 animate-pulse">
+                    ⚠️ Revisa dirección
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceCapture('address')}
+                  className={`p-1 rounded-lg text-[10px] font-bold flex items-center gap-0.5 transition-all ${
+                    isListeningVoice && activeVoiceField === 'address'
+                      ? 'bg-rose-600 text-white animate-pulse'
+                      : 'bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                  title="Dictar dirección"
+                >
+                  <Mic className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">
+                    {isListeningVoice && activeVoiceField === 'address' ? 'Escuchando...' : 'Dictar'}
+                  </span>
+                </button>
+              </div>
             </div>
 
             <input
@@ -1206,7 +1280,9 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               onChange={(e) => setRawAddress(e.target.value)}
               placeholder="Ej: Carrera 43C # 100 - 52"
               className={`w-full rounded-xl px-3 py-2.5 text-sm font-bold border focus:outline-none focus:ring-2 transition-all ${
-                hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete)
+                isListeningVoice && activeVoiceField === 'address'
+                  ? 'border-rose-500 ring-2 ring-rose-500/30'
+                  : hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete)
                   ? 'border-amber-400 ring-2 ring-amber-400/30 focus:ring-amber-400'
                   : rawAddress.trim() && isAddressComplete
                   ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-950/20 focus:ring-emerald-500'
@@ -1286,11 +1362,28 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 <User className="w-3.5 h-3.5 text-blue-400" />
                 DESTINATARIO (BLOQUE TO)
               </label>
-              {autoFilledFields.recipientName && (
-                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                  ✨ Auto
-                </span>
-              )}
+              <div className="flex items-center gap-1">
+                {autoFilledFields.recipientName && (
+                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    ✨ Auto
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceCapture('recipient')}
+                  className={`p-1 rounded-lg text-[10px] font-bold flex items-center gap-0.5 transition-all ${
+                    isListeningVoice && activeVoiceField === 'recipient'
+                      ? 'bg-rose-600 text-white animate-pulse'
+                      : 'bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                  title="Dictar nombre de destinatario"
+                >
+                  <Mic className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="hidden sm:inline">
+                    {isListeningVoice && activeVoiceField === 'recipient' ? 'Escuchando...' : 'Dictar'}
+                  </span>
+                </button>
+              </div>
             </div>
             <input
               type="text"
@@ -1298,7 +1391,9 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               onChange={(e) => setRecipientName(e.target.value)}
               placeholder="Alba Lucia Lopera Castrillon"
               className={`w-full rounded-xl px-3 py-2 text-sm font-medium border focus:outline-none focus:ring-2 transition-colors ${
-                recipientName.trim().length >= 3
+                isListeningVoice && activeVoiceField === 'recipient'
+                  ? 'border-rose-500 ring-2 ring-rose-500/30'
+                  : recipientName.trim().length >= 3
                   ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-950/20 focus:ring-emerald-500'
                   : 'border-slate-700 focus:ring-blue-500'
               } ${
@@ -1316,15 +1411,32 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 <Phone className="w-3.5 h-3.5 text-emerald-400" />
                 CELULAR WHATSAPP (573...)
               </label>
-              {autoFilledFields.recipientPhone && phoneValidation.isValid ? (
-                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                  ✨ Auto
-                </span>
-              ) : hasScannedAttempt && (!recipientPhone.trim() || !phoneValidation.isValid) ? (
-                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/50">
-                  ⚠️ Verifica celular
-                </span>
-              ) : null}
+              <div className="flex items-center gap-1">
+                {autoFilledFields.recipientPhone && phoneValidation.isValid ? (
+                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    ✨ Auto
+                  </span>
+                ) : hasScannedAttempt && (!recipientPhone.trim() || !phoneValidation.isValid) ? (
+                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/50">
+                    ⚠️ Verifica
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceCapture('phone')}
+                  className={`p-1 rounded-lg text-[10px] font-bold flex items-center gap-0.5 transition-all ${
+                    isListeningVoice && activeVoiceField === 'phone'
+                      ? 'bg-rose-600 text-white animate-pulse'
+                      : 'bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                  title="Dictar celular"
+                >
+                  <Mic className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">
+                    {isListeningVoice && activeVoiceField === 'phone' ? 'Escuchando...' : 'Dictar'}
+                  </span>
+                </button>
+              </div>
             </div>
             <input
               type="tel"
@@ -1336,8 +1448,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               }}
               placeholder="322 587 3762"
               className={`w-full rounded-xl px-3 py-2 text-sm font-mono font-bold border focus:outline-none focus:ring-2 transition-all ${
-                (recipientPhone && !phoneValidation.isValid) ||
-                (hasScannedAttempt && !recipientPhone.trim())
+                isListeningVoice && activeVoiceField === 'phone'
+                  ? 'border-rose-500 ring-2 ring-rose-500/30'
+                  : (recipientPhone && !phoneValidation.isValid) ||
+                    (hasScannedAttempt && !recipientPhone.trim())
                   ? 'border-amber-400 ring-2 ring-amber-400/30 focus:ring-amber-400'
                   : recipientPhone && phoneValidation.isValid
                   ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-950/20 focus:ring-emerald-500'
