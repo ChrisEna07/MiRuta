@@ -23,6 +23,8 @@ import {
   Aperture,
   ZoomIn,
   Zap,
+  Edit3,
+  ClipboardPaste,
 } from 'lucide-react';
 import {
   db,
@@ -333,11 +335,31 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     setAnalysisStageText('🔍 Leyendo código de barras y bloque "TO" (0°/90°)...');
     setAnalysisProgress(20);
 
+    // Blindaje contra congelamiento: Si tarda más de 1.5s, cancelar espera de IA y abrir teclado manual
+    const timeoutPromise = new Promise<{ isTimeout: true }>((resolve) => {
+      setTimeout(() => resolve({ isTimeout: true }), 1500);
+    });
+
     try {
-      const result = await scanIMileLabelSmart(source, (stageMsg, pct) => {
+      const scanPromise = scanIMileLabelSmart(source, (stageMsg, pct) => {
         setAnalysisStageText(stageMsg);
         if (pct !== undefined) setAnalysisProgress(pct);
       });
+
+      const raceWinner = await Promise.race([scanPromise, timeoutPromise]);
+
+      if ('isTimeout' in raceWinner) {
+        setIsAnalyzingLabel(false);
+        setFrozenFramePreview('');
+        scrollToVerificationForm();
+        toast.warning(
+          '⚡ Cámara/IA lenta o etiqueta borrosa',
+          'Usa el teclado manual o Smart Paste para registrar sin trabas.'
+        );
+        return;
+      }
+
+      const result = raceWinner;
 
       setCapturedLabelThumb(result.previewDataUrl);
       setSmartEngineBadge(result.engineBadge);
@@ -507,22 +529,56 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
   const applySmartBlockParse = (textToParse: string) => {
     const parsed = parseIMileLabelBlock(textToParse);
-    if (parsed.trackingNumber && !trackingNumber) {
+    const flags: AutoFilledFlags = {};
+
+    if (parsed.trackingNumber) {
       setTrackingNumber(sanitizeTrackingInput(parsed.trackingNumber));
-      setAutoFilledFields((prev) => ({ ...prev, trackingNumber: true }));
+      flags.trackingNumber = true;
     }
     if (parsed.recipientName) {
       setRecipientName(parsed.recipientName);
-      setAutoFilledFields((prev) => ({ ...prev, recipientName: true }));
+      flags.recipientName = true;
     }
     if (parsed.recipientPhone) {
       const formattedPhone = validateAndFormatColombianPhone(parsed.recipientPhone);
       setRecipientPhone(formattedPhone.formatted);
-      setAutoFilledFields((prev) => ({ ...prev, recipientPhone: true }));
+      flags.recipientPhone = true;
     }
     if (parsed.rawAddress) {
       setRawAddress(parsed.rawAddress);
-      setAutoFilledFields((prev) => ({ ...prev, rawAddress: true }));
+      flags.rawAddress = true;
+    }
+
+    setAutoFilledFields((prev) => ({ ...prev, ...flags }));
+    setHasScannedAttempt(true);
+    scrollToVerificationForm();
+
+    const filledCount = Object.keys(flags).length;
+    if (filledCount >= 1) {
+      playScannerLaserBeep();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+      toast.success(
+        `📋 Smart Paste: ${filledCount} campo(s) distribuidos`,
+        `${parsed.recipientName || 'Cliente'} • ${parsed.rawAddress || ''}`
+      );
+    }
+  };
+
+  const handleSmartClipboardPaste = async () => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.readText) {
+        const clipText = await navigator.clipboard.readText();
+        if (clipText && clipText.trim()) {
+          setSmartBlockText(clipText.trim());
+          applySmartBlockParse(clipText.trim());
+          return;
+        }
+      }
+      toast.info('📋 Pega el texto copiado en la caja de Smart Paste');
+    } catch {
+      toast.info('📋 Pega directamente con tu teclado en la caja de Smart Paste');
     }
   };
 
@@ -759,6 +815,18 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           </div>
         </div>
 
+        {/* Botón Destacado Permanente: ✍️ Ingresar Datos Manualmente (Cero Bloqueos) */}
+        <div className="mt-2.5">
+          <button
+            type="button"
+            onClick={scrollToVerificationForm}
+            className="w-full py-2.5 px-3 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 border border-amber-300 active:scale-[0.99] transition-all cursor-pointer"
+          >
+            <Edit3 className="w-4 h-4 stroke-[2.5]" />
+            <span>✍️ INGRESAR DATOS MANUALMENTE (MODO EXPRESS TECLADO / VOZ)</span>
+          </button>
+        </div>
+
         {/* Selector de Modos de Cámara Inteligente Full-Label (Pestaña A vs Pestaña B) */}
         <div className="mt-2.5 grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-950/90 border border-slate-800">
           <button
@@ -983,50 +1051,63 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           </div>
         )}
 
-        {/* Fast Voice / OCR Block Capture ("TO" Block) */}
+        {/* Caja Mágica "Smart Paste" (Pegado de Bloque Completo + Dictado de Voz) */}
         <div
-          className={`mt-3 p-2.5 rounded-2xl border ${
+          className={`mt-3 p-3 rounded-2xl border-2 transition-all ${
             highContrastSun
-              ? 'bg-slate-50 border-slate-300'
-              : 'bg-slate-950/80 border-slate-800'
+              ? 'bg-amber-50/80 border-amber-400 text-slate-950'
+              : 'bg-slate-950 border-amber-500/60 text-slate-100 shadow-lg'
           }`}
         >
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[11px] font-extrabold flex items-center gap-1 text-blue-400">
-              <Sparkles className="w-3.5 h-3.5" />
-              Pegar Bloque &quot;TO&quot; o Dictar por Voz
+          <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+            <span className="text-[11px] font-black uppercase flex items-center gap-1.5 text-amber-400">
+              <ClipboardPaste className="w-4 h-4 text-amber-400" />
+              <span>📋 Smart Paste (Pegar Bloque Completo)</span>
             </span>
-            <button
-              type="button"
-              onClick={handleToggleVoiceCapture}
-              className={`px-2.5 py-1 rounded-xl text-[11px] font-black flex items-center gap-1 transition-all ${
-                isListeningVoice
-                  ? 'bg-rose-600 text-white animate-pulse'
-                  : 'bg-emerald-600 text-white'
-              }`}
-            >
-              {isListeningVoice ? (
-                <>
-                  <MicOff className="w-3 h-3" />
-                  <span>Escuchando...</span>
-                </>
-              ) : (
-                <>
-                  <Mic className="w-3 h-3" />
-                  <span>Dictar Voz</span>
-                </>
-              )}
-            </button>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleSmartClipboardPaste}
+                className="px-2.5 py-1 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] flex items-center gap-1 active:scale-95 shadow-sm"
+              >
+                <ClipboardPaste className="w-3 h-3" />
+                <span>Pegar Portapapeles</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleVoiceCapture}
+                className={`px-2.5 py-1 rounded-xl text-[10px] font-black flex items-center gap-1 transition-all ${
+                  isListeningVoice
+                    ? 'bg-rose-600 text-white animate-pulse'
+                    : 'bg-slate-800 text-slate-200 border border-slate-700'
+                }`}
+              >
+                {isListeningVoice ? (
+                  <>
+                    <MicOff className="w-3 h-3" />
+                    <span>Escuchando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Mic className="w-3 h-3" />
+                    <span>Dictar</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-          <input
-            type="text"
+
+          <textarea
+            rows={2}
             value={smartBlockText}
             onChange={(e) => {
               setSmartBlockText(e.target.value);
               applySmartBlockParse(e.target.value);
             }}
-            placeholder="Ej: Alba Lucia Lopera 573225873762 Carrera 43c #100 52"
-            className={`w-full rounded-xl px-3 py-1.5 text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            placeholder="Pega aquí cualquier bloque copiado de WhatsApp o la orden. Detecta automáticamente Guía 610..., Celular 573..., Dirección y Nombre sin IA."
+            className={`w-full rounded-xl px-3 py-2 text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none ${
               highContrastSun
                 ? 'bg-white border-slate-300 text-slate-950'
                 : 'bg-slate-900 border-slate-700 text-white'
