@@ -43,6 +43,7 @@ import {
   scanIMileLabelSmart,
   getSmartVisionConfig,
 } from '../services/smartLabelScanner';
+import { inferMedellinComunaAndNormalizeAddress } from '../services/aiCopilotService';
 import { syncToSupabase } from '../services/supabaseSync';
 import { useToast } from './ui/FeedbackSystem';
 
@@ -410,6 +411,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const parsedAddressPreview = parseMedellinAddress(rawAddress, neighborhood);
   const isAddressComplete =
     parsedAddressPreview.mainNum > 0 && parsedAddressPreview.secNum > 0;
+  const medellinIntel = React.useMemo(
+    () => inferMedellinComunaAndNormalizeAddress(rawAddress, neighborhood),
+    [rawAddress, neighborhood]
+  );
   const phoneValidation = validateAndFormatColombianPhone(recipientPhone);
   const lastFourPreview = extractLastFourDigits(trackingNumber || '0000');
   const activeDefaultRate = getDefaultPackageRate();
@@ -958,7 +963,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             />
             {rawAddress.trim() && (
               <div
-                className={`mt-1.5 px-2.5 py-1.5 rounded-xl border flex items-center justify-between text-[11px] font-bold flex-wrap gap-1 ${
+                className={`mt-1.5 p-2.5 rounded-xl border text-[11px] font-bold space-y-1.5 ${
                   isAddressComplete
                     ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
                     : 'bg-amber-950/40 border-amber-500/40 text-amber-300'
@@ -966,16 +971,39 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               >
                 {isAddressComplete ? (
                   <>
-                    <span>
-                      ✅ Detectado: {parsedAddressPreview.mainType}{' '}
-                      {parsedAddressPreview.mainNum}
-                      {parsedAddressPreview.mainLetter} # {parsedAddressPreview.secNum}
-                      {parsedAddressPreview.secLetter} - {parsedAddressPreview.plate} (
-                      {neighborhood || 'Medellín'})
-                    </span>
-                    <span className="font-mono bg-emerald-500/20 px-1.5 py-0.5 rounded text-[10px]">
-                      Cuadra: {parsedAddressPreview.blockKey}
-                    </span>
+                    <div className="flex items-center justify-between flex-wrap gap-1">
+                      <span>
+                        ✅ Normalizado: <strong>{medellinIntel.normalizedAddress}</strong>
+                      </span>
+                      <span className="font-mono bg-emerald-500/20 px-1.5 py-0.5 rounded text-[10px]">
+                        Cuadra: {parsedAddressPreview.blockKey}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between flex-wrap gap-1.5 text-[10px] text-slate-300 pt-0.5 border-t border-emerald-500/20">
+                      <span>
+                        📍 Sector inferido: <strong className="text-sky-300">{medellinIntel.inferredNeighborhood}</strong> ({medellinIntel.comunaName})
+                      </span>
+                      {(rawAddress !== medellinIntel.normalizedAddress ||
+                        neighborhood !== medellinIntel.inferredNeighborhood) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRawAddress(medellinIntel.normalizedAddress);
+                            setNeighborhood(medellinIntel.inferredNeighborhood);
+                          }}
+                          className="px-2 py-0.5 rounded-lg bg-emerald-500 text-slate-950 font-black text-[10px]"
+                        >
+                          ✨ Aplicar Normalización IA
+                        </button>
+                      )}
+                    </div>
+                    <p
+                      className={`text-[10px] font-semibold ${
+                        medellinIntel.isSteepHillOrAlley ? 'text-amber-300' : 'text-emerald-300/90'
+                      }`}
+                    >
+                      {medellinIntel.terrainWarning}
+                    </p>
                   </>
                 ) : (
                   <span>

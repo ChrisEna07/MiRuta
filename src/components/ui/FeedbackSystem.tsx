@@ -39,6 +39,16 @@ export interface ConfirmStep {
   status: 'pending' | 'running' | 'done' | 'error';
 }
 
+export interface ConfirmModeChoice {
+  id: string;
+  title: string;
+  description: string;
+  badge?: string;
+  tone: 'emerald' | 'rose';
+  steps: string[];
+  confirmButtonLabel?: string;
+}
+
 export interface ConfirmOptions {
   title: string;
   description: string;
@@ -48,7 +58,12 @@ export interface ConfirmOptions {
   details?: string[];
   requireStepProgress?: boolean;
   steps?: string[];
-  onExecuteWithSteps?: (updateStep: (stepIndex: number, status: ConfirmStep['status']) => void) => Promise<void>;
+  modeChoices?: ConfirmModeChoice[];
+  defaultModeId?: string;
+  onExecuteWithSteps?: (
+    updateStep: (stepIndex: number, status: ConfirmStep['status']) => void,
+    selectedModeId: string
+  ) => Promise<void>;
 }
 
 interface ToastContextValue {
@@ -88,6 +103,7 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   } | null>(null);
   const [confirmRunning, setConfirmRunning] = useState(false);
   const [confirmSteps, setConfirmSteps] = useState<ConfirmStep[]>([]);
+  const [selectedModeId, setSelectedModeId] = useState<string>('');
 
   const dismiss = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -141,9 +157,16 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const confirm = useCallback((options: ConfirmOptions): Promise<boolean> => {
     triggerHaptic('light');
-    if (options.steps && options.steps.length > 0) {
+    if (options.modeChoices && options.modeChoices.length > 0) {
+      const initialChoice =
+        options.modeChoices.find((c) => c.id === options.defaultModeId) || options.modeChoices[0];
+      setSelectedModeId(initialChoice.id);
+      setConfirmSteps(initialChoice.steps.map((label) => ({ label, status: 'pending' })));
+    } else if (options.steps && options.steps.length > 0) {
+      setSelectedModeId('');
       setConfirmSteps(options.steps.map((label) => ({ label, status: 'pending' })));
     } else {
+      setSelectedModeId('');
       setConfirmSteps([]);
     }
     setConfirmRunning(false);
@@ -151,6 +174,13 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setActiveConfirm({ options, resolve });
     });
   }, []);
+
+  const handleSelectModeChoice = (choice: ConfirmModeChoice) => {
+    if (confirmRunning) return;
+    triggerHaptic('light');
+    setSelectedModeId(choice.id);
+    setConfirmSteps(choice.steps.map((label) => ({ label, status: 'pending' })));
+  };
 
   const handleConfirmCancel = () => {
     if (confirmRunning) return;
@@ -171,7 +201,7 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         );
       };
       try {
-        await activeConfirm.options.onExecuteWithSteps(updateStep);
+        await activeConfirm.options.onExecuteWithSteps(updateStep, selectedModeId);
         triggerHaptic('success');
         setTimeout(() => {
           activeConfirm.resolve(true);
@@ -187,6 +217,8 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setActiveConfirm(null);
     }
   };
+
+  const activeChoice = activeConfirm?.options.modeChoices?.find((c) => c.id === selectedModeId);
 
   return (
     <ToastContext.Provider value={toastApi}>
@@ -275,17 +307,17 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         {/* Interactive ConfirmDialogModal */}
         <AnimatePresence>
           {activeConfirm && (
-            <div className="fixed inset-0 z-[130] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-[130] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
               <motion.div
                 initial={{ opacity: 0, scale: 0.92, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.92, y: 12 }}
                 transition={{ duration: 0.2 }}
-                className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden p-5 space-y-4"
+                className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden p-5 space-y-3.5 max-h-[92vh] overflow-y-auto"
               >
                 <div className="flex items-start gap-3.5">
                   <div
-                    className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border ${
+                    className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 border ${
                       activeConfirm.options.variant === 'danger'
                         ? 'bg-rose-500/15 border-rose-500/40 text-rose-400'
                         : activeConfirm.options.variant === 'warning'
@@ -296,11 +328,11 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     }`}
                   >
                     {activeConfirm.options.variant === 'danger' ? (
-                      <Trash2 className="w-6 h-6" />
+                      <Trash2 className="w-5 h-5" />
                     ) : activeConfirm.options.variant === 'warning' ? (
-                      <ShieldAlert className="w-6 h-6" />
+                      <ShieldAlert className="w-5 h-5" />
                     ) : (
-                      <Sparkles className="w-6 h-6" />
+                      <Sparkles className="w-5 h-5" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -314,9 +346,9 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 </div>
 
                 {activeConfirm.options.details && activeConfirm.options.details.length > 0 && (
-                  <div className="rounded-2xl bg-slate-950/90 border border-slate-800 p-3 space-y-1.5">
+                  <div className="rounded-2xl bg-slate-950/90 border border-slate-800 p-3 space-y-1">
                     {activeConfirm.options.details.map((item, idx) => (
-                      <div key={idx} className="flex items-start gap-2 text-[11px] text-slate-300">
+                      <div key={idx} className="flex items-start gap-2 text-[11px] text-slate-300 font-semibold">
                         <span className="text-emerald-400 font-bold">•</span>
                         <span>{item}</span>
                       </div>
@@ -324,10 +356,85 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                   </div>
                 )}
 
+                {/* Selector Visual de 2 Opciones (Radio Cards Interactivas) */}
+                {activeConfirm.options.modeChoices && activeConfirm.options.modeChoices.length > 0 && (
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                      Selecciona el modo de operación:
+                    </span>
+                    {activeConfirm.options.modeChoices.map((choice) => {
+                      const isSelected = selectedModeId === choice.id;
+                      const isEmerald = choice.tone === 'emerald';
+                      return (
+                        <button
+                          key={choice.id}
+                          type="button"
+                          disabled={confirmRunning}
+                          onClick={() => handleSelectModeChoice(choice)}
+                          className={`w-full text-left p-3 rounded-2xl border-2 transition-all flex items-start gap-3 ${
+                            isSelected
+                              ? isEmerald
+                                ? 'bg-emerald-950/45 border-emerald-500 shadow-lg shadow-emerald-950/50'
+                                : 'bg-rose-950/50 border-rose-500 shadow-lg shadow-rose-950/50'
+                              : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 opacity-80'
+                          }`}
+                        >
+                          <div
+                            className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                              isSelected
+                                ? isEmerald
+                                  ? 'border-emerald-400 bg-emerald-500/20'
+                                  : 'border-rose-400 bg-rose-500/20'
+                                : 'border-slate-600'
+                            }`}
+                          >
+                            {isSelected && (
+                              <div
+                                className={`w-2 h-2 rounded-full ${
+                                  isEmerald ? 'bg-emerald-400' : 'bg-rose-400'
+                                }`}
+                              />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span
+                                className={`text-xs font-black ${
+                                  isSelected
+                                    ? isEmerald
+                                      ? 'text-emerald-300'
+                                      : 'text-rose-300'
+                                    : 'text-slate-200'
+                                }`}
+                              >
+                                {choice.title}
+                              </span>
+                              {choice.badge && (
+                                <span
+                                  className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${
+                                    isEmerald
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                  }`}
+                                >
+                                  {choice.badge}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-300/90 mt-1 leading-snug">
+                              {choice.description}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {confirmSteps.length > 0 && (
-                  <div className="rounded-2xl bg-slate-950/90 border border-slate-800 p-3.5 space-y-2.5">
+                  <div className="rounded-2xl bg-slate-950/90 border border-slate-800 p-3 space-y-2">
                     <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      <span>Progreso de Seguridad</span>
+                      <span>Progreso en Tiempo Real</span>
                       <span>
                         {confirmSteps.filter((s) => s.status === 'done').length}/{confirmSteps.length}
                       </span>
@@ -344,7 +451,7 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                         }}
                       />
                     </div>
-                    <div className="space-y-1.5 pt-1">
+                    <div className="space-y-1.5 pt-0.5">
                       {confirmSteps.map((step, idx) => (
                         <div
                           key={idx}
@@ -386,7 +493,9 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     disabled={confirmRunning}
                     onClick={handleConfirmAccept}
                     className={`py-3 px-4 rounded-xl font-black text-xs text-white flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg disabled:opacity-60 ${
-                      activeConfirm.options.variant === 'danger'
+                      activeChoice?.tone === 'emerald'
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-950/50'
+                        : activeConfirm.options.variant === 'danger'
                         ? 'bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 shadow-rose-950/50'
                         : activeConfirm.options.variant === 'warning'
                         ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-950/40'
@@ -399,7 +508,9 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                         Procesando...
                       </>
                     ) : (
-                      activeConfirm.options.confirmLabel || 'Confirmar'
+                      activeChoice?.confirmButtonLabel ||
+                      activeConfirm.options.confirmLabel ||
+                      'Confirmar'
                     )}
                   </button>
                 </div>

@@ -14,7 +14,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   CalendarClock,
-  X
+  X,
+  Sparkles,
+  Loader2
 } from 'lucide-react';
 import {
   db,
@@ -29,6 +31,10 @@ import {
 import { formatCOP } from '../utils/mediaAndFeedback';
 import { formatLiveCOPInput, parseLiveCOPInput } from '../utils/formatters';
 import { syncToSupabase } from '../services/supabaseSync';
+import {
+  generateShiftProfitabilityDiagnosis,
+  type ShiftAICopilotDiagnosis
+} from '../services/aiCopilotService';
 import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface ProfitabilityMeterProps {
@@ -54,6 +60,11 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
   const [pendingAction, setPendingAction] = useState<PendingPackagesAction>('move_to_tomorrow');
   const [isClosing, setIsClosing] = useState<boolean>(false);
   const [closedSuccessBanner, setClosedSuccessBanner] = useState<string>('');
+
+  // Estado del Copiloto IA de Rentabilidad en Tiempo Real (v5.0)
+  const [isAnalyzingAI, setIsAnalyzingAI] = useState<boolean>(false);
+  const [aiDiagnosis, setAiDiagnosis] = useState<ShiftAICopilotDiagnosis | null>(null);
+  const [streamedAiText, setStreamedAiText] = useState<string>('');
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -305,6 +316,42 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
   const canCloseShift =
     Boolean(shift?.startedAt && shift.status !== 'closed') || unarchivedPackages.length > 0;
 
+  const handleAnalyzeShiftWithAI = async () => {
+    setIsAnalyzingAI(true);
+    setStreamedAiText('');
+    try {
+      const result = await generateShiftProfitabilityDiagnosis({
+        packages,
+        activeMinutes,
+        fuelExpense: fuelCost,
+      });
+      setAiDiagnosis(result);
+
+      // Efecto de escritura en vivo (streaming visual)
+      const fullText = result.fullStreamingText;
+      let cursor = 0;
+      const step = Math.max(4, Math.ceil(fullText.length / 40));
+      const timer = setInterval(() => {
+        cursor += step;
+        if (cursor >= fullText.length) {
+          setStreamedAiText(fullText);
+          clearInterval(timer);
+        } else {
+          setStreamedAiText(fullText.slice(0, cursor));
+        }
+      }, 22);
+
+      toast.info(
+        result.usedCloudAI
+          ? '🧠 Diagnóstico IA Gemini Flash completado'
+          : '🧠 Diagnóstico Táctico IA completado',
+        result.headline
+      );
+    } finally {
+      setIsAnalyzingAI(false);
+    }
+  };
+
   return (
     <>
       <section
@@ -491,19 +538,67 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
                 {semaphore.message}
               </div>
 
-              {/* Botón Formal: 🏁 Terminar Jornada */}
-              {canCloseShift && (
+              {/* Botones Tácticos: 🧠 Analizar Mi Jornada con IA + 🏁 Terminar Jornada */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setClosingFuelInput(formatLiveCOPInput(String(shift?.fuelExpense ?? 12000)));
-                    setShowCloseShiftModal(true);
-                  }}
-                  className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-700 hover:from-indigo-500 hover:to-blue-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md active:scale-[0.99] transition-transform"
+                  disabled={isAnalyzingAI}
+                  onClick={handleAnalyzeShiftWithAI}
+                  className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-teal-600 via-emerald-600 to-teal-700 hover:from-teal-500 hover:to-emerald-500 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-[0.99] transition-all"
                 >
-                  <Flag className="w-4 h-4 text-amber-300" />
-                  <span>🏁 TERMINAR JORNADA Y ARCHIVAR ENTREGAS DEL DÍA</span>
+                  {isAnalyzingAI ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-amber-300 shrink-0" />
+                      <span>ANALIZANDO RITMO CON IA...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
+                      <span>🧠 ANALIZAR MI JORNADA CON IA</span>
+                    </>
+                  )}
                 </button>
+
+                {canCloseShift && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClosingFuelInput(formatLiveCOPInput(String(shift?.fuelExpense ?? 12000)));
+                      setShowCloseShiftModal(true);
+                    }}
+                    className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-700 hover:from-indigo-500 hover:to-blue-600 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-[0.99] transition-transform"
+                  >
+                    <Flag className="w-4 h-4 text-amber-300 shrink-0" />
+                    <span>🏁 TERMINAR JORNADA</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Tarjeta Moderna de Diagnóstico Táctico IA con Efecto Streaming en Vivo */}
+              {aiDiagnosis && (
+                <div className="p-3.5 rounded-2xl bg-slate-950/95 border-2 border-teal-500/60 text-slate-100 space-y-2 shadow-xl">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-teal-500/20 text-teal-300 border border-teal-500/40">
+                      <Sparkles className="w-3 h-3 text-amber-300" />
+                      {aiDiagnosis.usedCloudAI
+                        ? 'COPILOTO IA GEMINI FLASH (projects/696217047962)'
+                        : 'COPILOTO IA TÁCTICO EN TIEMPO REAL'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAiDiagnosis(null)}
+                      className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <p className="text-xs font-black text-emerald-400">{aiDiagnosis.headline}</p>
+
+                  <div className="text-xs text-slate-200 whitespace-pre-line leading-relaxed font-medium bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+                    {streamedAiText || aiDiagnosis.fullStreamingText}
+                  </div>
+                </div>
               )}
             </div>
           )}

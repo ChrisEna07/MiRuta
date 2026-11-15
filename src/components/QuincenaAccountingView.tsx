@@ -16,7 +16,10 @@ import {
   PlusCircle,
   Trash2,
   MessageSquareWarning,
-  Save
+  Save,
+  Sparkles,
+  Loader2,
+  Copy
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
@@ -31,6 +34,7 @@ import { formatCOP } from '../utils/mediaAndFeedback';
 import { formatLiveCOPInput, parseLiveCOPInput, sanitizeTrackingInput } from '../utils/formatters';
 import { generateAndShareQuincenaPDF } from '../utils/pdfReport';
 import { syncToSupabase } from '../services/supabaseSync';
+import { generateQuincenaAuditClaimText } from '../services/aiCopilotService';
 import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface QuincenaAccountingViewProps {
@@ -72,6 +76,10 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodType>('Nequi');
   const [settlementNotes, setSettlementNotes] = useState<string>('');
   const [settlementSavedMsg, setSettlementSavedMsg] = useState<string>('');
+
+  // Estado Redactor IA de Sustento / Reclamo Quincenal (v5.0)
+  const [aiClaimDraft, setAiClaimDraft] = useState<string>('');
+  const [isDraftingClaim, setIsDraftingClaim] = useState<boolean>(false);
 
   const defaultRate = getDefaultPackageRate();
 
@@ -352,6 +360,30 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
       true
     )}*. Hay una diferencia a revisar de *-${diffAbs}* (equivalente a *~${missingPackagesEquivalent} paquetes*). Te adjunto el PDF con el anexo detallado de cada guía y hora de entrega para validar. ¡Gracias!`;
     return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  };
+
+  const handleGenerateAIClaimDraft = async () => {
+    setIsDraftingClaim(true);
+    try {
+      const res = await generateQuincenaAuditClaimText({
+        periodLabel,
+        employerName,
+        contractorName,
+        deliveredPackages,
+        deductions: filteredDeductions,
+        expectedNetCOP: expectedNetFromCompany,
+        actualPaidCOP: actualPaidNumber,
+        reportedPkgsByCompany: reportedPkgsNumber,
+        paymentMethod,
+      });
+      setAiClaimDraft(res.messageText);
+      toast.success(
+        '🧠 Sustento de cobro / reclamo redactado',
+        `Listo para copiar o enviar por WhatsApp al ${employerName}.`
+      );
+    } finally {
+      setIsDraftingClaim(false);
+    }
   };
 
   // Tabla resumen por día
@@ -693,6 +725,77 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
             )}
           </div>
         )}
+
+        {/* Botón Copiloto IA: 🧠 Redactar Sustento de Cobro / Reclamo con IA */}
+        <div className="pt-1 space-y-2.5">
+          <button
+            type="button"
+            disabled={isDraftingClaim}
+            onClick={handleGenerateAIClaimDraft}
+            className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-indigo-600 via-purple-600 to-teal-600 hover:from-indigo-500 hover:to-teal-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
+          >
+            {isDraftingClaim ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin text-amber-300 shrink-0" />
+                <span>REDACTANDO SUSTENTO FORMAL CON IA...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4 text-amber-300 shrink-0" />
+                <span>🧠 REDACTAR SUSTENTO DE COBRO / RECLAMO CON IA</span>
+              </>
+            )}
+          </button>
+
+          {aiClaimDraft && (
+            <div className="p-3.5 rounded-2xl bg-slate-950/95 border-2 border-indigo-500/60 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase text-indigo-300 flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  Sustento Formal Redactado por IA (Editable)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAiClaimDraft('')}
+                  className="text-[10px] font-bold text-slate-400 hover:text-white"
+                >
+                  Cerrar
+                </button>
+              </div>
+
+              <textarea
+                rows={6}
+                value={aiClaimDraft}
+                onChange={(e) => setAiClaimDraft(e.target.value)}
+                className="w-full rounded-xl p-2.5 text-xs font-medium bg-slate-900 border border-slate-800 text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(aiClaimDraft);
+                    toast.success('📋 Sustento copiado al portapapeles');
+                  }}
+                  className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-black text-xs flex items-center justify-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Copiar Texto</span>
+                </button>
+
+                <a
+                  href={`https://wa.me/?text=${encodeURIComponent(aiClaimDraft)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Enviar al {employerName}</span>
+                </a>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* SECCIÓN DE PENALIZACIONES, MULTAS Y DESCUENTOS */}

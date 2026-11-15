@@ -30,6 +30,7 @@ import {
   updatePackageRateSetting,
   createBackupSnapshot,
   wipeOperationalDatabaseWithMandatoryBackup,
+  wipeOperationalDatabaseDirectWithoutBackup,
   restoreSessionFromSnapshot,
   downloadSnapshotAsJSONFile,
   saveSnapshotToDateFolderWithDirectoryPicker,
@@ -212,53 +213,123 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     toast.info('🗑️ Snapshot eliminado de la bóveda');
   };
 
-  // --- FLUJO OBLIGATORIO CON BARRA DE PROGRESO PASO A PASO: BORRAR BASE DE DATOS ---
-  const handleWipeDatabaseWithMandatoryBackup = async () => {
-    let createdSnap: BackupSnapshotRecord | null = null;
-
+  const handleClearAllVaultSnapshots = async () => {
+    if (allSnapshots.length === 0) {
+      toast.info('🗂️ La bóveda de backups ya está vacía');
+      return;
+    }
     const accepted = await confirm({
-      title: '🛡️ Borrar Base Operativa con Auto-Backup',
-      description:
-        'Antes de limpiar las tablas operativas (paquetes, jornadas y quincenas), MiRuta ejecutará un protocolo de respaldo automático en 3 pasos:',
+      title: '🧹 ¿Vaciar todos los Backups de la Bóveda?',
+      description: `Se eliminarán permanentemente las ${allSnapshots.length} sesiones guardadas en tu bóveda local (backupSnapshots).`,
       details: [
-        'La Bóveda de Sesiones (backupSnapshots) NO se borra.',
-        'Se descargará automáticamente una copia .JSON en tu dispositivo.',
-        'Podrás restaurar esta sesión cuando quieras con 1 toque.',
+        'Tus paquetes y turnos activos actuales NO se borrarán.',
+        'Los archivos .JSON que ya hayas descargado en tu móvil seguirán intactos.',
       ],
-      steps: [
-        'Paso 1/3: Generando Snapshot de seguridad...',
-        'Paso 2/3: Subiendo respaldo a Supabase Cloud...',
-        'Paso 3/3: Limpiando tablas operativas...',
-      ],
-      confirmLabel: '🛡️ Respaldar y Borrar Ahora',
+      confirmLabel: '🧹 Sí, vaciar bóveda',
       cancelLabel: 'Cancelar',
       variant: 'danger',
-      onExecuteWithSteps: async (updateStep) => {
-        // Paso 1
+    });
+    if (!accepted) return;
+
+    await db.backupSnapshots.clear();
+    toast.warning('🧹 Bóveda de Backups vaciada por completo');
+  };
+
+  // --- FLUJO DUAL CON SELECTOR INTERACTIVO Y BARRA DE PROGRESO PASO A PASO: BORRAR BASE DE DATOS ---
+  const handleWipeDatabaseWithMandatoryBackup = async () => {
+    const [packages, shifts] = await Promise.all([
+      db.packages.toArray(),
+      db.shifts.toArray(),
+    ]);
+    const defaultRate = getDefaultPackageRate();
+    const totalGrossCOP = packages
+      .filter((p) => p.status === 'delivered')
+      .reduce((acc, p) => acc + (p.rate || defaultRate), 0);
+    const todayFolder = new Date().toISOString().slice(0, 10);
+
+    let createdSnap: BackupSnapshotRecord | null = null;
+    let executedMode: string = 'with_backup';
+
+    const accepted = await confirm({
+      title: '🗑️ Borrar Base de Datos Operativa',
+      description: `Actualmente tienes ${packages.length} paquetes, ${shifts.length} turnos y ${formatCOP(
+        totalGrossCOP,
+        true
+      )} registrados. Elige cómo deseas vaciar la base operativa:`,
+      details: [
+        'La Bóveda de Sesiones (backupSnapshots) permanece protegida.',
+      ],
+      defaultModeId: 'with_backup',
+      modeChoices: [
+        {
+          id: 'with_backup',
+          title: '🛡️ Generar Backup y Vaciar (Recomendado)',
+          badge: 'RECOMENDADO • 3 PASOS',
+          description: `Guarda un Snapshot en la carpeta de fecha ${todayFolder}, sincroniza con Supabase, descarga el archivo .JSON y luego vacía la base de datos.`,
+          tone: 'emerald',
+          confirmButtonLabel: '🛡️ Respaldar y Vaciar',
+          steps: [
+            `Paso 1/3: Empaquetando Snapshot en carpeta ${todayFolder}...`,
+            'Paso 2/3: Respaldando en Supabase Cloud y descargando JSON...',
+            'Paso 3/3: Vaciando tablas operativas...',
+          ],
+        },
+        {
+          id: 'direct_no_backup',
+          title: '⚡ Solo Vaciar Base de Datos (Sin Backup)',
+          badge: '1 PASO DIRECTO',
+          description:
+            'Borrado rápido e inmediato. Elimina todos los paquetes, turnos y cuentas actuales sin generar copia de seguridad ni descargar archivos.',
+          tone: 'rose',
+          confirmButtonLabel: '⚡ Vaciar Sin Backup',
+          steps: [
+            'Paso Único: Vaciando tablas operativas directamente (Sin Backup)...',
+          ],
+        },
+      ],
+      cancelLabel: 'Cancelar',
+      variant: 'danger',
+      onExecuteWithSteps: async (updateStep, selectedModeId) => {
+        executedMode = selectedModeId || 'with_backup';
+
+        if (executedMode === 'direct_no_backup') {
+          updateStep(0, 'running');
+          await new Promise((r) => setTimeout(r, 250));
+          await wipeOperationalDatabaseDirectWithoutBackup();
+          updateStep(0, 'done');
+          return;
+        }
+
+        // Modo 1 (Con Backup en 3 pasos)
         updateStep(0, 'running');
         await new Promise((r) => setTimeout(r, 250));
         const mandatorySnapshot = await wipeOperationalDatabaseWithMandatoryBackup();
         createdSnap = mandatorySnapshot;
         updateStep(0, 'done');
 
-        // Paso 2
         updateStep(1, 'running');
         await pushSnapshotToSupabase(mandatorySnapshot);
         updateStep(1, 'done');
 
-        // Paso 3
         updateStep(2, 'running');
         await new Promise((r) => setTimeout(r, 250));
         updateStep(2, 'done');
       },
     });
 
-    if (accepted && createdSnap) {
+    if (!accepted) return;
+
+    if (executedMode === 'direct_no_backup') {
+      toast.warning(
+        '⚡ Base de datos vaciada directamente sin generar backup',
+        'Todas las tablas operativas quedaron limpias en cero.'
+      );
+    } else if (createdSnap) {
       const snap = createdSnap as BackupSnapshotRecord;
       setExpandedFolderDates((prev) => ({ ...prev, [snap.folderDate]: true }));
       toast.success(
-        `✅ Auto-Backup creado en 📁 ${snap.folderDate}`,
-        `${snap.stats.packagesCount} paquetes respaldados y base operativa limpia en cero.`
+        '🛡️ Base de datos vaciada con Backup guardado en bóveda',
+        `Carpeta 📁 ${snap.folderDate} (${snap.stats.packagesCount} paquetes respaldados)`
       );
     }
   };
@@ -727,23 +798,34 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           </div>
         )}
 
-        {/* Botón de Borrado Seguro con Auto-Backup Previo Obligatorio */}
-        <div className="pt-2 border-t border-slate-800">
+        {/* Botón de Borrado Dual (Con Backup en 3 pasos o Vaciar Directo en 1 paso) + Limpieza opcional de Bóveda */}
+        <div className="pt-2 border-t border-slate-800 space-y-2">
           <button
             type="button"
             onClick={handleWipeDatabaseWithMandatoryBackup}
             className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-600/25 active:scale-95 transition-all"
           >
             <Trash2 className="w-4 h-4 shrink-0" />
-            <span>🗑️ BORRAR BASE DE DATOS OPERATIVA (CON AUTO-BACKUP SEGURO)</span>
+            <span>🗑️ BORRAR BASE DE DATOS OPERATIVA</span>
           </button>
-          <p className="text-[10px] text-center text-slate-400 mt-1">
-            Genera automáticamente un backup en carpeta por fecha + descarga .JSON antes de limpiar.
+          <p className="text-[10px] text-center text-slate-400">
+            Al pulsar podrás elegir entre <strong>🛡️ Generar Backup y Vaciar (3 pasos)</strong> o <strong>⚡ Solo Vaciar Sin Backup (1 paso directo)</strong>.
           </p>
+
+          {allSnapshots.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearAllVaultSnapshots}
+              className="w-full py-2 px-3 rounded-xl bg-slate-950/90 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-500/40 text-slate-400 hover:text-rose-300 font-bold text-[11px] flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>🧹 Vaciar también todos los Backups de la Bóveda ({allSnapshots.length})</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* 3. 🧠 MOTOR DE CÁMARA INTELIGENTE (IA VISION + OCR OFFLINE) */}
+      {/* 3. 🧠 MOTOR DE CÁMARA INTELIGENTE & COPILOTO GEMINI IA (v5.0) */}
       <div
         className={`rounded-3xl border-2 p-4 shadow-xl space-y-3 ${
           highContrastSun
@@ -757,20 +839,25 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
               <Camera className="w-5 h-5" />
             </div>
             <div>
-              <span
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border ${
-                  visionCfg.hasAiVisionKey
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                    : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                }`}
-              >
-                {visionCfg.modeLabel}
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                    visionCfg.hasAiVisionKey
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  }`}
+                >
+                  {visionCfg.modeLabel}
+                </span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                  {visionCfg.projectId}
+                </span>
+              </div>
               <h2 className="text-sm sm:text-base font-black mt-1">
-                🧠 Motor de Cámara Inteligente (IA Vision + OCR Offline)
+                🧠 Copiloto Gemini IA + Cámara Inteligente
               </h2>
               <p className="text-[11px] text-slate-400">
-                Extrae Guía, #4 Dígitos, Cliente, Celular y Dirección de etiquetas iMile en 1 foto
+                Visión de etiquetas iMile, normalizador de direcciones de Medellín y auditoría financiera IA
               </p>
             </div>
           </div>
@@ -993,7 +1080,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800 text-[11px] text-slate-400 flex items-start gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
           <span>
-            <strong>MiRuta by Christian Romero (v4.0):</strong> Conectado a Supabase (`qsoekxdghdklwduwleuh`) con Bóveda de Backups por Fecha, Validaciones en Tiempo Real y Auto-Respaldo obligatorio pre-borrado.
+            <strong>MiRuta by Christian Romero (v5.0):</strong> Conectado a Supabase (`qsoekxdghdklwduwleuh`) + Copiloto Gemini IA (`projects/696217047962`) con Bóveda de Backups por Fecha y Borrado Dual Interactivo.
           </span>
         </div>
       </div>

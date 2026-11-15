@@ -425,6 +425,28 @@ export async function wipeOperationalDatabaseWithMandatoryBackup(): Promise<Back
 }
 
 /**
+ * Vacía directamente las tablas operativas (`packages`, `shifts`, `deductions`, `settlements`)
+ * en 1 paso directo sin generar registro en `backupSnapshots` ni descargar archivo `.json`.
+ * Ideal para limpiar rápido datos de prueba sin llenar la bóveda de backups.
+ */
+export async function wipeOperationalDatabaseDirectWithoutBackup(): Promise<void> {
+  await db.transaction(
+    'rw',
+    db.packages,
+    db.shifts,
+    db.deductions,
+    db.settlements,
+    async () => {
+      await db.packages.clear();
+      await db.shifts.clear();
+      await db.deductions.clear();
+      await db.settlements.clear();
+    }
+  );
+  await ensureShiftExists(getTodayShiftId());
+}
+
+/**
  * Restaura una sesión completa desde un Snapshot guardado en `db.backupSnapshots`.
  * Antes de sobrescribir, guarda un micro-backup de seguridad si la base operativa actual tiene paquetes.
  */

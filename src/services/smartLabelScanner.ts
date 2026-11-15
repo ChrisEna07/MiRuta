@@ -3,11 +3,17 @@ import { Html5Qrcode } from 'html5-qrcode';
 import { extractLastFourDigits } from '../db/database';
 import { parseIMileLabelBlock } from '../utils/addressParser';
 import { sanitizeTrackingInput } from '../utils/formatters';
+import {
+  getGeminiClientMetadata,
+  invokeGeminiFlashModel,
+  inferMedellinComunaAndNormalizeAddress,
+} from './aiCopilotService';
 
 const GEMINI_API_KEY_STORAGE = 'miruta_gemini_api_key';
 
 export interface SmartVisionConfig {
   geminiApiKey: string;
+  projectId: string;
   hasAiVisionKey: boolean;
   modeLabel: string;
 }
@@ -19,6 +25,8 @@ export interface SmartLabelScanResult {
   recipientPhone: string;
   rawAddress: string;
   neighborhood: string;
+  comunaName?: string;
+  terrainWarning?: string;
   engineUsed: 'hybrid_ai_vision' | 'offline_tesseract_ocr' | 'barcode_only';
   engineBadge: string;
   durationMs: number;
@@ -30,18 +38,13 @@ export interface SmartLabelScanResult {
 export type ScanStageCallback = (stageMessage: string, progressPercent?: number) => void;
 
 export function getSmartVisionConfig(): SmartVisionConfig {
-  const envMap = (import.meta as unknown as { env?: Record<string, string | undefined> }).env || {};
-  const envKey = envMap.VITE_GEMINI_API_KEY || '';
-  const storedKey =
-    typeof window !== 'undefined' ? localStorage.getItem(GEMINI_API_KEY_STORAGE) || '' : '';
-  const finalKey = (storedKey || envKey).trim();
-  const hasAiVisionKey = finalKey.length > 15;
-
+  const meta = getGeminiClientMetadata();
   return {
-    geminiApiKey: finalKey,
-    hasAiVisionKey,
-    modeLabel: hasAiVisionKey
-      ? '🟢 Modo IA Vision Activo (Gemini Flash + Fallback OCR Offline)'
+    geminiApiKey: meta.apiKey,
+    projectId: meta.projectId,
+    hasAiVisionKey: meta.hasKey,
+    modeLabel: meta.hasKey
+      ? `🟢 Modo IA Vision Activo (${meta.projectId} + Fallback OCR Offline)`
       : '⚡ Modo OCR Local + Barcode Nativo Activo (100% Gratis y Offline)'
   };
 }
@@ -235,7 +238,7 @@ export async function detectBarcodeFromCanvas(
 }
 
 /**
- * CAPA 2: Visión Inteligente con IA (Gemini 2.5 Flash Vision API).
+ * CAPA 2: Visión Inteligente con IA (Gemini 2.5 Flash Vision API - Soporte dual AIza... y AQ....).
  */
 async function analyzeLabelWithGeminiVision(
   previewDataUrl: string,
@@ -245,49 +248,16 @@ async function analyzeLabelWithGeminiVision(
     return null;
   }
 
-  const base64Data = previewDataUrl.replace(/^data:image\/\w+;base64,/, '');
   const prompt =
     'Analiza esta etiqueta logística de iMile Colombia (Shein/Temu). Extrae exactamente en JSON: { trackingNumber: string (guía de 12-15 dígitos ej. 6103026696672 o los 4 dígitos grandes si está cortada), recipientName: string (nombre debajo de TO), recipientPhone: string (celular colombiano ej. 573225873762), rawAddress: string (dirección física ej. Carrera 43c #100 52), neighborhood: string (barrio o municipio ej. Medellín) }.';
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000);
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-        apiKey
-      )}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                {
-                  inlineData: {
-                    mimeType: 'image/jpeg',
-                    data: base64Data
-                  }
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.1
-          }
-        })
-      }
-    );
-
-    clearTimeout(timeoutId);
-    if (!response.ok) return null;
-
-    const json = await response.json();
-    const rawContent = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rawContent = await invokeGeminiFlashModel({
+      prompt,
+      base64Jpeg: previewDataUrl,
+      expectJson: true,
+      timeoutMs: 6500,
+    });
     if (!rawContent) return null;
 
     const parsed = JSON.parse(rawContent);
@@ -578,6 +548,19 @@ export async function scanIMileLabelSmart(
   const finalTracking = sanitizeTrackingInput(trackingNumber);
   const lastFourDigits = extractLastFourDigits(finalTracking || '0000');
 
+  // Normalizar dirección difícil y deducir Comuna / Barrio / Alerta de Loma en Medellín
+  let comunaName = '';
+  let terrainWarning = '';
+  if (rawAddress) {
+    const intel = inferMedellinComunaAndNormalizeAddress(rawAddress, neighborhood);
+    rawAddress = intel.normalizedAddress || rawAddress;
+    if (neighborhood === 'Medellín' && intel.inferredNeighborhood) {
+      neighborhood = intel.inferredNeighborhood;
+    }
+    comunaName = intel.comunaName;
+    terrainWarning = intel.terrainWarning;
+  }
+
   let fieldsDetectedCount = 0;
   if (finalTracking) fieldsDetectedCount++;
   if (recipientName) fieldsDetectedCount++;
@@ -599,6 +582,8 @@ export async function scanIMileLabelSmart(
     recipientPhone,
     rawAddress,
     neighborhood,
+    comunaName,
+    terrainWarning,
     engineUsed,
     engineBadge,
     durationMs,
