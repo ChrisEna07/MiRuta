@@ -189,13 +189,15 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       setNextClientAlertPkg(null);
     }
 
-    // Refinar en segundo plano con la coordenada GPS exacta del celular en el momento de la entrega
-    captureCurrentGPSOrFallback(currentPkg).then(async (exactCoords) => {
-      if (exactCoords) {
-        await db.packages.update(pkgId, { deliveryCoordinates: exactCoords });
-      }
-      syncToSupabase(true);
-    });
+    // Refinar en segundo plano (Fire-and-forget, 100% offline-first)
+    setTimeout(() => {
+      captureCurrentGPSOrFallback(currentPkg).then(async (exactCoords) => {
+        if (exactCoords) {
+          await db.packages.update(pkgId, { deliveryCoordinates: exactCoords });
+        }
+        syncToSupabase(true).catch(() => {});
+      }).catch(() => {});
+    }, 0);
   };
 
   const handleMarkIssue = async () => {
@@ -221,7 +223,9 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
     if (candidateNext) {
       setNextClientAlertPkg(candidateNext);
     }
-    syncToSupabase(true);
+    setTimeout(() => {
+      syncToSupabase(true).catch(() => {});
+    }, 0);
   };
 
   if (!currentPkg) {

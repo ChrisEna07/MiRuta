@@ -583,8 +583,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       return;
     }
 
-    setSaveState('saving');
-
+    // Modo Bala 100% Offline: No mostramos estado infinito ni bloqueamos la UI
     try {
       const finalTracking =
         cleanTrack || `610302${Math.floor(1000000 + Math.random() * 9000000)}`;
@@ -608,7 +607,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           updatedPkg.coordinates = estimateMedellinCoordinatesFromAddress(updatedPkg);
           await db.packages.put(updatedPkg);
           toast.success(
-            `✅ Guía #${updatedPkg.lastFourDigits} actualizada sin duplicar`,
+            `✅ Guía #${updatedPkg.lastFourDigits} actualizada`,
             updatedPkg.rawAddress
           );
         }
@@ -636,27 +635,32 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
         await db.packages.add(newPkg);
         toast.success(
-          `✅ Paquete #${newPkg.lastFourDigits} registrado en ruta`,
-          `${newPkg.rawAddress} • Cámara lista para el siguiente paquete`
+          `⚡ Guardado #${newPkg.lastFourDigits}`,
+          newPkg.rawAddress
         );
       }
 
-      playCashRegisterSuccess();
+      // Sonido y vibración instantáneos
+      playScannerLaserBeep();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([40, 30, 40]);
+      }
 
-      // Aprendizaje por retroalimentación en el Motor Adaptativo de Etiquetas iMile
-      await learnFromConfirmedPackage({
-        trackingNumber: finalTracking,
-        recipientName: recipientName.trim() || 'Cliente iMile',
-        recipientPhone,
-        rawAddress: rawAddress.trim(),
-        rawOcrAttempt: lastRawOcrText,
-        rotationUsedDeg: lastRotationDeg,
-      });
-      await refreshLearningStats();
+      // Tareas secundarias en segundo plano (Fire-and-forget: NUNCA bloquean la UI ni la cámara)
+      setTimeout(() => {
+        learnFromConfirmedPackage({
+          trackingNumber: finalTracking,
+          recipientName: recipientName.trim() || 'Cliente iMile',
+          recipientPhone,
+          rawAddress: rawAddress.trim(),
+          rawOcrAttempt: lastRawOcrText,
+          rotationUsedDeg: lastRotationDeg,
+        }).catch(() => {});
+        syncToSupabase(true).catch(() => {});
+      }, 0);
 
-      syncToSupabase(true).catch(() => {});
-
-      setSaveState('ready');
+      // Limpieza instantánea del formulario
+      setSaveState('idle');
       setEditingPackageId(null);
       setTrackingNumber('');
       setRecipientName('');
@@ -669,17 +673,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setHasScannedAttempt(false);
       lastDecodedBarcodeRef.current = '';
 
-      setTimeout(() => {
-        setSaveState('idle');
-        if (!keepOpenForNext) {
-          onClose();
-        } else {
-          // Subir al visor de cámara y abrir escáner en vivo de inmediato sin tocar nada más
-          setActiveScannerTab('live');
-          scrollToTopCamera();
-          startCameraScanner();
-        }
-      }, 450);
+      if (!keepOpenForNext) {
+        onClose();
+      } else {
+        // En ráfaga o continuar: reiniciar cámara inmediatamente sin esperas
+        setActiveScannerTab('live');
+        scrollToTopCamera();
+        startCameraScanner();
+      }
     } catch {
       setSaveState('idle');
       toast.error('⚠️ No se pudo guardar el paquete en IndexedDB');
@@ -1129,8 +1130,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               className={`w-full rounded-xl px-3 py-2.5 text-sm font-bold border focus:outline-none focus:ring-2 transition-all ${
                 hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete)
                   ? 'border-amber-400 ring-2 ring-amber-400/30 focus:ring-amber-400'
-                  : autoFilledFields.rawAddress && isAddressComplete
-                  ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
+                  : rawAddress.trim() && isAddressComplete
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-950/20 focus:ring-emerald-500'
                   : 'border-slate-700 focus:ring-blue-500'
               } ${
                 highContrastSun
@@ -1219,8 +1220,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               onChange={(e) => setRecipientName(e.target.value)}
               placeholder="Alba Lucia Lopera Castrillon"
               className={`w-full rounded-xl px-3 py-2 text-sm font-medium border focus:outline-none focus:ring-2 transition-colors ${
-                autoFilledFields.recipientName
-                  ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
+                recipientName.trim().length >= 3
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-950/20 focus:ring-emerald-500'
                   : 'border-slate-700 focus:ring-blue-500'
               } ${
                 highContrastSun
@@ -1260,9 +1261,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 (recipientPhone && !phoneValidation.isValid) ||
                 (hasScannedAttempt && !recipientPhone.trim())
                   ? 'border-amber-400 ring-2 ring-amber-400/30 focus:ring-amber-400'
-                  : (recipientPhone && phoneValidation.isValid) ||
-                    autoFilledFields.recipientPhone
-                  ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
+                  : recipientPhone && phoneValidation.isValid
+                  ? 'border-emerald-500 ring-2 ring-emerald-500/20 bg-emerald-950/20 focus:ring-emerald-500'
                   : 'border-slate-700 focus:ring-blue-500'
               } ${
                 highContrastSun
@@ -1299,27 +1299,17 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             />
           </div>
 
-          {/* Botón Único Principal Gigante e Imponente (1-Touch Flow) + Enlace Sutil Secundario */}
+          {/* Botón Único Principal Gigante e Imponente (1-Touch Flow Modo Bala) + Enlace Sutil Secundario */}
           <div className="pt-2 space-y-2.5">
             <button
               type="submit"
-              disabled={saveState !== 'idle'}
-              className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 disabled:opacity-75 text-slate-950 font-black text-base shadow-xl shadow-emerald-600/30 border-2 border-emerald-300 active:scale-[0.98] flex items-center justify-center gap-2 transition-all"
+              className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-base shadow-xl shadow-emerald-600/30 border-2 border-emerald-300 active:scale-[0.98] flex items-center justify-center gap-2 transition-all cursor-pointer"
             >
-              {saveState === 'saving' ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin stroke-[2.5]" />
-                  <span>GUARDANDO PAQUETE...</span>
-                </>
-              ) : saveState === 'ready' ? (
-                <>
-                  <CheckCircle2 className="w-5 h-5 stroke-[2.5]" />
-                  <span>✅ ¡GUARDADO! ABRIENDO CÁMARA...</span>
-                </>
-              ) : editingPackageId ? (
-                <span>💾 ACTUALIZAR Y ESCANEAR OTRO</span>
+              <Zap className="w-5 h-5 fill-slate-950 shrink-0" />
+              {editingPackageId ? (
+                <span>⚡ ACTUALIZAR Y ESCANEAR OTRO</span>
               ) : (
-                <span>💾 GUARDAR Y ESCANEAR OTRO</span>
+                <span>⚡ GUARDAR Y ESCANEAR OTRO</span>
               )}
             </button>
 

@@ -345,7 +345,8 @@ export async function invokeGeminiWithFreeTierRouter(
   for (const candidate of candidateModels) {
     const modelId = candidate.spec.id;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 3800);
+    const timeout = Math.min(options.timeoutMs ?? 1900, 1900);
+    const timer = setTimeout(() => controller.abort(), timeout);
 
     try {
       recordModelAttempt(modelId);

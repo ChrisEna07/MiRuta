@@ -353,7 +353,7 @@ Extrae del bloque "TO" (destinatario) y del código de barras superior/inferior 
     prompt,
     inlineImageBase64: previewDataUrl,
     expectJson: true,
-    timeoutMs: 4200,
+    timeoutMs: 1900,
   });
 
   if (!routerRes) return null;
