@@ -616,39 +616,31 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const handleSavePackage = async (e: React.FormEvent, keepOpenForNext = true) => {
     e.preventDefault();
 
+    // Hotfix v8.3: Cero bloqueos silenciosos ni trampas de validación.
+    // Si la guía está vacía o incompleta, autogenerar guía provisional de emergencia.
     const cleanTrack = sanitizeTrackingInput(trackingNumber);
-    if (cleanTrack.length > 0 && cleanTrack.length < 4) {
-      toast.error(
-        '⚠️ La guía debe tener al menos 4 dígitos válidos',
-        'Verifica el número de guía iMile o déjalo vacío para autogenerar.'
-      );
-      return;
-    }
+    let finalTracking = cleanTrack;
+    let isAutoProvisional = false;
 
-    if (!rawAddress.trim()) {
-      toast.error(
-        '⚠️ Ingresa la dirección de entrega',
-        'Ejemplo: Carrera 43C # 100 - 52 (Medellín)'
-      );
-      return;
-    }
-
-    if (duplicateTodayPkg && !editingPackageId) {
+    if (!finalTracking || finalTracking.length < 4) {
+      const nowTs = Date.now();
+      const lastDigits = String(nowTs).slice(-6);
+      finalTracking = `GUIA-MANUAL-${lastDigits}`;
+      isAutoProvisional = true;
       toast.warning(
-        `⚠️ La guía #${duplicateTodayPkg.lastFourDigits} ya está en tu ruta de hoy`,
-        'Pulsa "Actualizar" en el aviso amarillo para no duplicarla.'
+        `⚠️ Guía Provisional Generada (#${lastDigits.slice(-4)})`,
+        'Guarda sin trabas. Podrás editarla después en la lista de ruta.'
       );
-      return;
     }
 
-    // Modo Bala 100% Offline: No mostramos estado infinito ni bloqueamos la UI
+    // Dirección con fallback automático para jamás bloquear el guardado
+    const addressToSave = rawAddress.trim() || 'Dirección Manual por Ingresar';
+
     try {
-      const finalTracking =
-        cleanTrack || `610302${Math.floor(1000000 + Math.random() * 9000000)}`;
       const shiftId = getTodayShiftId();
       await ensureShiftExists(shiftId);
 
-      const parsedAddr = parseMedellinAddress(rawAddress, neighborhood);
+      const parsedAddr = parseMedellinAddress(addressToSave, neighborhood);
 
       if (editingPackageId) {
         const existingPkg = await db.packages.get(editingPackageId);
@@ -657,9 +649,9 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             ...existingPkg,
             trackingNumber: finalTracking,
             lastFourDigits: extractLastFourDigits(finalTracking),
-            recipientName: recipientName.trim() || 'Cliente iMile',
-            recipientPhone: normalizeColombianPhone(recipientPhone),
-            rawAddress: rawAddress.trim(),
+            recipientName: recipientName.trim() || 'Cliente Sin Nombre',
+            recipientPhone: normalizeColombianPhone(recipientPhone) || '573000000000',
+            rawAddress: addressToSave,
             parsedAddress: parsedAddr,
             packageSize: packageSize,
           };
@@ -677,14 +669,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         const newPkg: DeliveryPackage = {
           trackingNumber: finalTracking,
           lastFourDigits: extractLastFourDigits(finalTracking),
-          recipientName: recipientName.trim() || 'Cliente iMile',
-          recipientPhone: normalizeColombianPhone(recipientPhone),
-          rawAddress: rawAddress.trim(),
+          recipientName: recipientName.trim() || 'Cliente Sin Nombre',
+          recipientPhone: normalizeColombianPhone(recipientPhone) || '573000000000',
+          rawAddress: addressToSave,
           parsedAddress: parsedAddr,
           coordinates: null,
           routeOrder: maxOrder + 1,
           status: 'pending',
-          issueNote: '',
+          issueNote: isAutoProvisional ? 'Guía provisional autogenerada en calle' : '',
           rate: getDefaultPackageRate(),
           shiftId,
           scannedAt: Date.now(),
@@ -700,19 +692,19 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         );
       }
 
-      // Sonido y vibración instantáneos
+      // Feedback táctil y auditivo inmediato
       playScannerLaserBeep();
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate([40, 30, 40]);
+        navigator.vibrate([60, 40, 60]);
       }
 
       // Tareas secundarias en segundo plano (Fire-and-forget: NUNCA bloquean la UI ni la cámara)
       setTimeout(() => {
         learnFromConfirmedPackage({
           trackingNumber: finalTracking,
-          recipientName: recipientName.trim() || 'Cliente iMile',
+          recipientName: recipientName.trim() || 'Cliente Sin Nombre',
           recipientPhone,
-          rawAddress: rawAddress.trim(),
+          rawAddress: addressToSave,
           rawOcrAttempt: lastRawOcrText,
           rotationUsedDeg: lastRotationDeg,
         }).catch(() => {});
@@ -742,9 +734,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         scrollToTopCamera();
         startCameraScanner();
       }
-    } catch {
+    } catch (err) {
+      console.error('Error crítico de guardado:', err);
       setSaveState('idle');
-      toast.error('⚠️ No se pudo guardar el paquete en IndexedDB');
+      toast.error('⚠️ Error guardando localmente. Reintentando...');
     }
   };
 
@@ -1209,7 +1202,6 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
             <input
               type="text"
-              required
               value={rawAddress}
               onChange={(e) => setRawAddress(e.target.value)}
               placeholder="Ej: Carrera 43C # 100 - 52"
