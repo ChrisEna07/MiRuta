@@ -346,6 +346,32 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       await pushSnapshotToSupabase(snap);
     }
 
+    // Sincronizar patrones aprendidos del motor de etiquetas iMile (learned_patterns)
+    try {
+      const allPatterns = await db.learnedPatterns.toArray();
+      if (allPatterns.length > 0) {
+        const patternRows = allPatterns.map((lp) => ({
+          recipient_phone: lp.recipientPhone,
+          recipient_name: lp.recipientName,
+          normalized_address: lp.normalizedAddress,
+          neighborhood: lp.neighborhood || 'Medellín',
+          sample_tracking_number: lp.sampleTrackingNumber || '',
+          last_four_digits: lp.lastFourDigits || '',
+          ocr_raw_snippet: lp.ocrRawSnippet || '',
+          preferred_rotation_deg: lp.preferredRotationDeg ?? 0,
+          to_block_relative_box: lp.toBlockRelativeBox || null,
+          confirmations_count: lp.confirmationsCount || 1,
+          updated_at: lp.updatedAt || Date.now(),
+          synced_at: new Date().toISOString()
+        }));
+        await client
+          .from('learned_patterns')
+          .upsert(patternRows, { onConflict: 'recipient_phone' });
+      }
+    } catch {
+      // No bloquear la sincronización principal si la tabla aún no ha sido creada en Supabase
+    }
+
     const nowTs = Date.now();
     if (typeof window !== 'undefined') {
       localStorage.setItem(LAST_SYNC_TS_KEY, String(nowTs));

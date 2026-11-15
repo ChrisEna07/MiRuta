@@ -135,8 +135,131 @@ export function detectSameBlockClusters(packages: DeliveryPackage[]): SameBlockA
 }
 
 /**
- * Parser inteligente de bloque "TO" de etiquetas iMile (por voz o texto pegado/OCR).
- * Extrae código de barras (si viene), teléfono 573..., dirección y nombre del destinatario.
+ * Palabras impresas de formato en bolsas físicas de iMile (Shein/Temu) que JAMÁS deben entrar a Nombre o Dirección.
+ */
+const IMILE_BOILERPLATE_PATTERNS: RegExp[] = [
+  /\bRef\s*No\.?\b/gi,
+  /\bShip\s*Date\b/gi,
+  /\bDeclared\s*value\b/gi,
+  /\bUSD\b/gi,
+  /\bG\.?W\.?\b/gi,
+  /\bBat\s*&?\s*Category\b/gi,
+  /\bNormal\b/gi,
+  /\bPcs\b/gi,
+  /\bQty\b/gi,
+  /\bDropship\s*Order\b/gi,
+  /\bYucan\b/gi,
+  /\bWebsite\b/gi,
+  /\bwww\.imile\.com\b/gi,
+  /\bimile\.com\b/gi,
+  /\bSleeve\s*blouse\b/gi,
+  /\bCOL\b/gi,
+  /\bMEP\b/gi,
+  /\bANT\s*000[\s\-]*MEP\b/gi,
+  /\b000[\s\-]*MEP\b/gi,
+  /\bAC\d{3,5}\b/gi,
+  /\bHome\b/gi,
+  /\bDST\b/gi,
+  /\bTO:?\b/gi,
+  /\bFROM:?\b/gi,
+  /\bDESTINATARIO:?\b/gi,
+  /\bNOMBRE:?\b/gi,
+  /\bTEL(?:EFONO)?:?\b/gi,
+  /\bDIRECCI[OÓ]N:?\b/gi,
+  /\bMEDELL[IÍ]N\b/gi,
+  /\bANTIOQUIA\b/gi,
+  /\bCOLOMBIA\b/gi,
+];
+
+/**
+ * Sanitizador Estricto Anti-Basura (`sanitizeExtractedHumanText` - v6.0):
+ * Elimina ruido de OCR de códigos de barras (ej. `A Tom] Ix. Sm © = 0 @ 8...`) y palabras de plantilla iMile.
+ */
+export function sanitizeExtractedHumanText(raw: string, mode: 'name' | 'address' | 'general' = 'general'): string {
+  if (!raw) return '';
+  let text = raw
+    // 1. Eliminar símbolos de ruido de OCR prohibidos
+    .replace(/[©®™@\[\]=~|{}<>$%*\\^_+!?'"`“”‘’;]/g, ' ');
+
+  // 2. Eliminar palabras del formato impreso de la bolsa iMile
+  for (const pat of IMILE_BOILERPLATE_PATTERNS) {
+    text = text.replace(pat, ' ');
+  }
+
+  if (mode === 'name') {
+    // Un nombre de destinatario válido SOLO puede contener letras y espacios
+    text = text.replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]/g, ' ');
+  } else if (mode === 'address') {
+    // Una dirección solo permite letras, números, #, - y espacios
+    text = text.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ#\-.\s]/g, ' ');
+  }
+
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Valida que un supuesto nombre de cliente sea 100% humano y NO ruido de barras (`A Tom] Ix. Sm`).
+ * Requiere mínimo 2 palabras alfabéticas reales, con vocales y longitud coherente.
+ */
+export function isValidCleanRecipientName(candidate: string): string | undefined {
+  const cleaned = sanitizeExtractedHumanText(candidate, 'name');
+  if (!cleaned || cleaned.length < 5) return undefined;
+
+  const words = cleaned
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && /[aeiouáéíóúAEIOUÁÉÍÓÚ]/.test(w));
+
+  // Descartar fragmentos típicos de ruido OCR cortos como "Tom Ix Sm"
+  const meaningfulWords = words.filter((w) => w.length >= 3);
+  if (words.length < 2 || meaningfulWords.length < 1) {
+    return undefined;
+  }
+
+  // Verificar que al menos una palabra tenga >= 4 letras (ej. Alba, Lucia, Lopera, Christian, Maria, Juan)
+  if (!words.some((w) => w.length >= 4)) {
+    return undefined;
+  }
+
+  return words
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
+ * Formatea una dirección de Medellín limpia en estándar `Carrera 43C # 100 - 52`
+ */
+export function normalizeCleanMedellinAddressString(rawAddr: string): string | undefined {
+  const cleaned = sanitizeExtractedHumanText(rawAddr, 'address');
+  if (!cleaned) return undefined;
+
+  const match = cleaned.match(
+    /\b(carrera|cra\.?|cr\.?|kr\.?|calle|cll\.?|cl\.?|transversal|tv\.?|diagonal|dg\.?|circular|cq\.?|avenida|av\.?)\s*(\d{1,3})\s*([a-zA-Z]{0,3})?\s*(sur)?\s*(?:#|nro\.?|no\.?|\s)\s*(\d{1,3})\s*([a-zA-Z]{0,3})?\s*(?:-|\s)\s*(\d{1,3})\b/i
+  );
+
+  if (!match) return undefined;
+
+  const rawRoad = match[1].toLowerCase().replace('.', '');
+  let roadLabel = 'Carrera';
+  if (['calle', 'cll', 'cl'].includes(rawRoad)) roadLabel = 'Calle';
+  else if (['transversal', 'tv'].includes(rawRoad)) roadLabel = 'Transversal';
+  else if (['diagonal', 'dg'].includes(rawRoad)) roadLabel = 'Diagonal';
+  else if (['circular', 'cq'].includes(rawRoad)) roadLabel = 'Circular';
+  else if (['avenida', 'av'].includes(rawRoad)) roadLabel = 'Avenida';
+
+  const mainNum = match[2];
+  const mainLetter = (match[3] || '').toUpperCase();
+  const surPart = match[4] ? ' Sur' : '';
+  const secNum = match[5];
+  const secLetter = (match[6] || '').toUpperCase();
+  const plate = match[7];
+
+  return `${roadLabel} ${mainNum}${mainLetter}${surPart} # ${secNum}${secLetter} - ${plate}`;
+}
+
+/**
+ * Parser inteligente de bloque "TO" de etiquetas iMile (por voz, texto pegado o motor OCR).
+ * Usa el Teléfono (`573\d{9}`) como Ancla Espacial para extraer la línea superior (Nombre)
+ * y la línea inferior (Dirección), aplicando el filtro estricto anti-basura.
  */
 export function parseIMileLabelBlock(rawText: string): {
   trackingNumber?: string;
@@ -152,45 +275,64 @@ export function parseIMileLabelBlock(rawText: string): {
   const trackingNumber = trackingMatch ? trackingMatch[1] : undefined;
 
   // 2. Buscar teléfono celular colombiano (573XXXXXXXXX o 3XXXXXXXXX)
-  const phoneMatch = text.match(/\b(57\s*3\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|3\d{2}[\s\-]?\d{3}[\s\-]?\d{4})\b/);
+  const phoneMatch = text.match(
+    /\b(57\s*3\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|3\d{2}[\s\-]?\d{3}[\s\-]?\d{4})\b/
+  );
   const recipientPhone = phoneMatch ? normalizeColombianPhone(phoneMatch[1]) : undefined;
 
-  // 3. Buscar dirección (Carrera / Calle / Tv / Dg / Cq)
-  const addressMatch = text.match(
-    /\b((?:carrera|cra\.?|cr\.?|kr\.?|calle|cll\.?|cl\.?|transversal|tv\.?|diagonal|dg\.?|circular|cq\.?)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:sur)?\s*(?:#|nro|no|numero|\s)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:-|\s)\s*\d{1,3}(?:[^\n,;/]{0,25}))/i
-  );
-  const rawAddress = addressMatch
-    ? addressMatch[1]
-        .replace(/\b(MEDELL[IÍ]N|ANTIOQUIA|COLOMBIA)\b/gi, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-    : undefined;
+  // 3. Buscar dirección válida de Medellín
+  const rawAddress = normalizeCleanMedellinAddressString(text);
 
-  // 4. El resto limpio suele ser el nombre del cliente
-  let leftover = text;
-  if (trackingMatch) leftover = leftover.replace(trackingMatch[0], '');
-  if (phoneMatch) leftover = leftover.replace(phoneMatch[0], '');
-  if (addressMatch) leftover = leftover.replace(addressMatch[0], '');
-  leftover = leftover
-    .replace(/\b(TO:?|DESTINATARIO:?|NOMBRE:?|TEL:?|DIRECCION:?|MEDELL[IÍ]N|ANTIOQUIA|COLOMBIA)\b/gi, '')
-    .replace(/[,;|/\-\n]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // 4. Anclaje Espacial por Teléfono (`573...`) para extraer el Nombre del Destinatario sin basura
+  let recipientName: string | undefined;
 
-  const toTitleCase = (str: string) =>
-    str
-      .toLowerCase()
-      .split(' ')
-      .filter(Boolean)
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(' ');
+  if (phoneMatch && phoneMatch.index !== undefined) {
+    // Tomar el texto inmediatamente anterior al teléfono (en el bloque TO de iMile el nombre siempre precede al celular)
+    const beforePhone = text.slice(Math.max(0, phoneMatch.index - 90), phoneMatch.index);
+    const linesBefore = beforePhone
+      .split(/[\n/|]+/)
+      .map((l) => l.trim())
+      .filter(Boolean);
 
-  const recipientName = leftover.length >= 3 ? toTitleCase(leftover) : undefined;
+    for (let i = linesBefore.length - 1; i >= 0; i--) {
+      const validName = isValidCleanRecipientName(linesBefore[i]);
+      if (validName) {
+        recipientName = validName;
+        break;
+      }
+    }
+  }
+
+  // Si no se halló por línea previa al teléfono, buscar línea limpia en el bloque sin guía/teléfono/dirección
+  if (!recipientName) {
+    let candidateText = text;
+    if (trackingMatch) candidateText = candidateText.replace(trackingMatch[0], ' ');
+    if (phoneMatch) candidateText = candidateText.replace(phoneMatch[0], ' ');
+    if (rawAddress) {
+      candidateText = candidateText.replace(
+        /\b((?:carrera|cra\.?|cr\.?|kr\.?|calle|cll\.?|cl\.?|transversal|tv\.?|diagonal|dg\.?|circular|cq\.?)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:sur)?\s*(?:#|nro|no|numero|\s)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:-|\s)\s*\d{1,3})/gi,
+        ' '
+      );
+    }
+
+    const lines = candidateText
+      .split(/[\n/|]+/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const validName = isValidCleanRecipientName(line);
+      if (validName) {
+        recipientName = validName;
+        break;
+      }
+    }
+  }
 
   return {
     trackingNumber,
     recipientName,
     recipientPhone,
-    rawAddress
+    rawAddress,
   };
 }

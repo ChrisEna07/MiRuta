@@ -1,13 +1,26 @@
 import { createWorker } from 'tesseract.js';
 import { Html5Qrcode } from 'html5-qrcode';
-import { extractLastFourDigits } from '../db/database';
-import { parseIMileLabelBlock } from '../utils/addressParser';
+import { extractLastFourDigits, normalizeColombianPhone } from '../db/database';
+import {
+  parseIMileLabelBlock,
+  isValidCleanRecipientName,
+  normalizeCleanMedellinAddressString,
+  sanitizeExtractedHumanText,
+} from '../utils/addressParser';
 import { sanitizeTrackingInput } from '../utils/formatters';
 import {
   getGeminiClientMetadata,
-  invokeGeminiFlashModel,
   inferMedellinComunaAndNormalizeAddress,
 } from './aiCopilotService';
+import {
+  invokeGeminiWithFreeTierRouter,
+  getQuotaGuardrailSnapshot,
+} from './geminiModelRouter';
+import {
+  recallFromLearnedMemory,
+  buildFewShotPromptExamples,
+  applyLearnedThermalOcrFixes,
+} from './labelLearningEngine';
 
 const GEMINI_API_KEY_STORAGE = 'miruta_gemini_api_key';
 
@@ -27,25 +40,32 @@ export interface SmartLabelScanResult {
   neighborhood: string;
   comunaName?: string;
   terrainWarning?: string;
-  engineUsed: 'hybrid_ai_vision' | 'offline_tesseract_ocr' | 'barcode_only';
+  engineUsed:
+    | 'learned_memory_recall'
+    | 'hybrid_ai_vision'
+    | 'offline_tesseract_ocr'
+    | 'barcode_only';
   engineBadge: string;
   durationMs: number;
   previewDataUrl: string;
   rawOcrText?: string;
   fieldsDetectedCount: number;
+  rotationUsedDeg?: number;
+  recalledFromMemory?: boolean;
 }
 
 export type ScanStageCallback = (stageMessage: string, progressPercent?: number) => void;
 
 export function getSmartVisionConfig(): SmartVisionConfig {
   const meta = getGeminiClientMetadata();
+  const quota = getQuotaGuardrailSnapshot();
   return {
     geminiApiKey: meta.apiKey,
     projectId: meta.projectId,
     hasAiVisionKey: meta.hasKey,
     modeLabel: meta.hasKey
-      ? `🟢 Modo IA Vision Activo (${meta.projectId} + Fallback OCR Offline)`
-      : '⚡ Modo OCR Local + Barcode Nativo Activo (100% Gratis y Offline)'
+      ? `🟢 Router IA Free-Tier (${quota.activeRecommendedModel} • Costo $0 Garantizado)`
+      : '⚡ Motor Local Aprendido + Multi-Ángulo (100% Gratis y Offline)',
   };
 }
 
@@ -60,17 +80,79 @@ export function saveSmartVisionApiKey(apiKey: string): void {
 }
 
 /**
+ * Rota un HTMLCanvasElement en 90° CW o 270° CCW para leer etiquetas iMile verticales.
+ */
+function rotateCanvas(
+  sourceCanvas: HTMLCanvasElement,
+  angleDeg: 90 | 270
+): HTMLCanvasElement {
+  const rotated = document.createElement('canvas');
+  rotated.width = sourceCanvas.height;
+  rotated.height = sourceCanvas.width;
+  const ctx = rotated.getContext('2d');
+  if (!ctx) return sourceCanvas;
+
+  ctx.save();
+  if (angleDeg === 90) {
+    ctx.translate(rotated.width, 0);
+    ctx.rotate(Math.PI / 2);
+  } else {
+    ctx.translate(0, rotated.height);
+    ctx.rotate((3 * Math.PI) / 2);
+  }
+  ctx.drawImage(sourceCanvas, 0, 0);
+  ctx.restore();
+  return rotated;
+}
+
+/**
+ * Aplica pre-procesamiento de alto contraste en escala de grises a un canvas para OCR de etiquetas térmicas.
+ */
+function createHighContrastOcrDataUrl(sourceCanvas: HTMLCanvasElement): string {
+  const ocrCanvas = document.createElement('canvas');
+  ocrCanvas.width = sourceCanvas.width;
+  ocrCanvas.height = sourceCanvas.height;
+  const ocrCtx = ocrCanvas.getContext('2d');
+  if (!ocrCtx) return sourceCanvas.toDataURL('image/jpeg', 0.9);
+
+  ocrCtx.drawImage(sourceCanvas, 0, 0);
+  try {
+    const imgData = ocrCtx.getImageData(0, 0, ocrCanvas.width, ocrCanvas.height);
+    const data = imgData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const contrast = 1.48;
+      let adjusted = (lum - 128) * contrast + 128;
+      if (adjusted > 188) adjusted = 255;
+      else if (adjusted < 72) adjusted = 0;
+      const val = Math.max(0, Math.min(255, Math.round(adjusted)));
+      data[i] = val;
+      data[i + 1] = val;
+      data[i + 2] = val;
+    }
+    ocrCtx.putImageData(imgData, 0, 0);
+  } catch {
+    // Fallback si canvas no permite getImageData
+  }
+  return ocrCanvas.toDataURL('image/jpeg', 0.92);
+}
+
+/**
  * Convierte cualquier fuente de imagen (File, Blob, HTMLVideoElement, DataURL)
- * en dos versiones optimizadas en <canvas>:
- * 1. `previewDataUrl`: JPEG en color nítido (máx 1150px) para vista previa, BarcodeDetector y Gemini Vision.
- * 2. `ocrProcessedDataUrl`: Imagen en escala de grises con alto contraste adaptativo para Tesseract OCR.
+ * en versiones optimizadas a 0°, 90° CW y 270° CCW.
  */
 export async function prepareLabelImagesFromSource(
   source: File | Blob | HTMLVideoElement | string
 ): Promise<{
   previewDataUrl: string;
   ocrProcessedDataUrl: string;
+  ocrRotated90DataUrl: string;
+  ocrRotated270DataUrl: string;
   canvasElement: HTMLCanvasElement;
+  canvasRotated90: HTMLCanvasElement;
 }> {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -94,9 +176,9 @@ export async function prepareLabelImagesFromSource(
     canvas.height = height;
     ctx.drawImage(source, 0, 0, width, height);
   } else {
-    const img = await loadImageFromSource(source as File | Blob | string);
-    width = img.naturalWidth || img.width || 1000;
-    height = img.naturalHeight || img.height || 1000;
+    const img = await loadImageElement(source as File | Blob | string);
+    width = img.naturalWidth || img.width || 1200;
+    height = img.naturalHeight || img.height || 900;
     const maxDim = 1280;
     if (width > maxDim || height > maxDim) {
       const ratio = Math.min(maxDim / width, maxDim / height);
@@ -108,46 +190,26 @@ export async function prepareLabelImagesFromSource(
     ctx.drawImage(img, 0, 0, width, height);
   }
 
-  const previewDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  const previewDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+  const ocrProcessedDataUrl = createHighContrastOcrDataUrl(canvas);
 
-  // Crear segundo canvas con realce de contraste y escala de grises para OCR Offline
-  const ocrCanvas = document.createElement('canvas');
-  ocrCanvas.width = width;
-  ocrCanvas.height = height;
-  const ocrCtx = ocrCanvas.getContext('2d');
-  if (ocrCtx) {
-    ocrCtx.drawImage(canvas, 0, 0);
-    const imgData = ocrCtx.getImageData(0, 0, width, height);
-    const data = imgData.data;
+  const canvas90 = rotateCanvas(canvas, 90);
+  const canvas270 = rotateCanvas(canvas, 270);
 
-    // Estiramiento de contraste suave (hace que las letras negras sobre plástico blanco/gris resalten)
-    const contrast = 1.48;
-    const intercept = 128 * (1 - contrast);
+  const ocrRotated90DataUrl = createHighContrastOcrDataUrl(canvas90);
+  const ocrRotated270DataUrl = createHighContrastOcrDataUrl(canvas270);
 
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      // Luminancia perceptual
-      let lum = 0.299 * r + 0.587 * g + 0.114 * b;
-      lum = lum * contrast + intercept;
-      const clamped = lum < 25 ? 0 : lum > 235 ? 255 : Math.round(lum);
-      data[i] = clamped;
-      data[i + 1] = clamped;
-      data[i + 2] = clamped;
-    }
-    ocrCtx.putImageData(imgData, 0, 0);
-  }
-
-  const ocrProcessedDataUrl = ocrCanvas.toDataURL('image/jpeg', 0.9);
   return {
     previewDataUrl,
     ocrProcessedDataUrl,
-    canvasElement: canvas
+    ocrRotated90DataUrl,
+    ocrRotated270DataUrl,
+    canvasElement: canvas,
+    canvasRotated90: canvas90,
   };
 }
 
-function loadImageFromSource(source: File | Blob | string): Promise<HTMLImageElement> {
+function loadImageElement(source: File | Blob | string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -171,102 +233,150 @@ function loadImageFromSource(source: File | Blob | string): Promise<HTMLImageEle
   });
 }
 
-/**
- * CAPA 1: Detección por Hardware Nativo (`window.BarcodeDetector`) + Fallback `html5-qrcode`.
- */
-export async function detectBarcodeFromCanvas(
-  canvas: HTMLCanvasElement,
-  previewDataUrl: string
-): Promise<string> {
-  // 1A. Intentar con la API nativa de hardware de Chrome Android (`BarcodeDetector`)
-  try {
-    const BarcodeDetectorClass = (
-      window as unknown as {
-        BarcodeDetector?: new (opts?: { formats: string[] }) => {
-          detect: (img: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
-        };
-      }
-    ).BarcodeDetector;
+function dataUrlToFile(dataUrl: string, fileName: string): File {
+  const arr = dataUrl.split(',');
+  const mimeMatch = arr[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const bstr = atob(arr[1] || '');
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new File([u8arr], fileName, { type: mime });
+}
 
-    if (BarcodeDetectorClass) {
-      const detector = new BarcodeDetectorClass({
-        formats: ['code_128', 'code_39', 'ean_13', 'qr_code', 'itf', 'codabar', 'data_matrix']
-      });
-      const results = await detector.detect(canvas);
-      if (results && results.length > 0) {
-        // Priorizar códigos de 12-15 dígitos tipo iMile (610...)
-        const imileMatch = results.find((r) => /^61\d{10,12}$/.test((r.rawValue || '').trim()));
-        if (imileMatch?.rawValue) {
-          return sanitizeTrackingInput(imileMatch.rawValue);
+/**
+ * CAPA 1: Detección de Código de Barras por Hardware Nativo (`window.BarcodeDetector`)
+ * + Fallback Multi-Ángulo (0° y 90°) con `Html5Qrcode`.
+ */
+export async function detectBarcodeLayer1(
+  canvases: HTMLCanvasElement[],
+  dataUrlsForFallback: string[]
+): Promise<string> {
+  // 1A. Intentar con API nativa de hardware de Android Chrome (`window.BarcodeDetector`)
+  if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
+    try {
+      const BarcodeDetectorClass = (
+        window as unknown as {
+          BarcodeDetector: new (opts: { formats: string[] }) => {
+            detect: (
+              src: HTMLCanvasElement
+            ) => Promise<Array<{ rawValue?: string }>>;
+          };
         }
-        const firstValid = results.find((r) => (r.rawValue || '').trim().length >= 4);
-        if (firstValid?.rawValue) {
-          return sanitizeTrackingInput(firstValid.rawValue);
+      ).BarcodeDetector;
+
+      const detector = new BarcodeDetectorClass({
+        formats: ['code_128', 'code_39', 'ean_13', 'qr_code', 'itf', 'codabar'],
+      });
+
+      for (const c of canvases) {
+        const results = await detector.detect(c);
+        if (results && results.length > 0) {
+          for (const item of results) {
+            const cleaned = sanitizeTrackingInput(item.rawValue || '');
+            if (cleaned.length >= 10) {
+              return cleaned;
+            }
+          }
         }
       }
+    } catch {
+      // Continuar a Html5Qrcode fallback
     }
-  } catch {
-    // Continuar con fallback html5-qrcode
   }
 
-  // 1B. Fallback con Html5Qrcode sobre archivo temporal
+  // 1B. Fallback universal con Html5Qrcode probando orientaciones 0° y 90°
+  const tempId = 'miruta-smart-temp-qr-reader';
+  let tempDiv = document.getElementById(tempId);
+  if (!tempDiv && typeof document !== 'undefined') {
+    tempDiv = document.createElement('div');
+    tempDiv.id = tempId;
+    tempDiv.style.display = 'none';
+    document.body.appendChild(tempDiv);
+  }
+
   try {
-    const res = await fetch(previewDataUrl);
-    const blob = await res.blob();
-    const file = new File([blob], 'label-scan.jpg', { type: 'image/jpeg' });
-
-    const tempId = 'miruta-hidden-file-barcode-scanner';
-    let tempEl = document.getElementById(tempId);
-    if (!tempEl) {
-      tempEl = document.createElement('div');
-      tempEl.id = tempId;
-      tempEl.style.display = 'none';
-      document.body.appendChild(tempEl);
-    }
-
-    const html5Qr = new Html5Qrcode(tempId);
-    const decoded = await html5Qr.scanFile(file, false);
-    html5Qr.clear();
-    if (decoded) {
-      return sanitizeTrackingInput(decoded);
+    const qr = new Html5Qrcode(tempId);
+    for (let i = 0; i < dataUrlsForFallback.length; i++) {
+      try {
+        const fileToScan = dataUrlToFile(dataUrlsForFallback[i], `imile-angle-${i}.jpg`);
+        const decoded = await qr.scanFile(fileToScan, false);
+        const cleaned = sanitizeTrackingInput(decoded || '');
+        if (cleaned.length >= 8) {
+          return cleaned;
+        }
+      } catch {
+        // Probar siguiente ángulo
+      }
     }
   } catch {
-    // Si no se detecta código de barras por imagen, las capas 2 y 3 lo extraerán por texto
+    // Sin código de barras decodificable
   }
 
   return '';
 }
 
 /**
- * CAPA 2: Visión Inteligente con IA (Gemini 2.5 Flash Vision API - Soporte dual AIza... y AQ....).
+ * CAPA 2: Enrutador Multi-Modelo Gemini Vision Free-Tier + Few-Shot Dynamic Prompting
  */
-async function analyzeLabelWithGeminiVision(
-  previewDataUrl: string,
-  apiKey: string
-): Promise<Partial<SmartLabelScanResult> | null> {
-  if (!apiKey || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return null;
-  }
+async function extractLabelWithGeminiRouterLayer2(
+  previewDataUrl: string
+): Promise<{
+  trackingNumber?: string;
+  recipientName?: string;
+  recipientPhone?: string;
+  rawAddress?: string;
+  neighborhood?: string;
+  modelUsed?: string;
+} | null> {
+  const fewShotBlock = await buildFewShotPromptExamples();
 
-  const prompt =
-    'Analiza esta etiqueta logística de iMile Colombia (Shein/Temu). Extrae exactamente en JSON: { trackingNumber: string (guía de 12-15 dígitos ej. 6103026696672 o los 4 dígitos grandes si está cortada), recipientName: string (nombre debajo de TO), recipientPhone: string (celular colombiano ej. 573225873762), rawAddress: string (dirección física ej. Carrera 43c #100 52), neighborhood: string (barrio o municipio ej. Medellín) }.';
+  const prompt = `Eres un experto lector de etiquetas logísticas de iMile Colombia (paquetes de Shein y Temu en Medellín).
+NOTA CRÍTICA: El texto del bloque "TO" puede venir rotado 90 grados (vertical) o en horizontal. Léelo en la orientación correcta.
+PROHIBIDO devolver texto basura como símbolos "@, ©, =, [, ]" o palabras de plantilla como "Ref No, Ship Date, Declared value, Sleeve blouse, ANT 000-MEP".
+
+Ejemplos reales aprendidos de mi ruta en Medellín (Few-Shot):
+${fewShotBlock}
+
+Extrae del bloque "TO" (destinatario) y del código de barras superior/inferior los siguientes campos en JSON estricto:
+{
+  "trackingNumber": "número de guía de 12 a 13 dígitos que suele empezar por 610 (ej: 6103026696672)",
+  "recipientName": "nombre y apellidos limpios del cliente en el bloque TO (SOLO letras y espacios, ej: Alba Lucia Lopera Castrillon)",
+  "recipientPhone": "celular colombiano de 10 o 12 dígitos que empieza por 573 o 3 (ej: 573225873762)",
+  "rawAddress": "dirección física limpia en Medellín (ej: Carrera 43C # 100 - 52)",
+  "neighborhood": "barrio o sector en Medellín si aparece"
+}`;
+
+  const routerRes = await invokeGeminiWithFreeTierRouter({
+    prompt,
+    inlineImageBase64: previewDataUrl,
+    expectJson: true,
+    timeoutMs: 4200,
+  });
+
+  if (!routerRes) return null;
 
   try {
-    const rawContent = await invokeGeminiFlashModel({
-      prompt,
-      base64Jpeg: previewDataUrl,
-      expectJson: true,
-      timeoutMs: 6500,
-    });
-    if (!rawContent) return null;
+    const cleanedJson = routerRes.text
+      .replace(/^```json\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const parsed = JSON.parse(cleanedJson);
 
-    const parsed = JSON.parse(rawContent);
+    const validName = isValidCleanRecipientName(String(parsed.recipientName || ''));
+    const validAddr =
+      normalizeCleanMedellinAddressString(String(parsed.rawAddress || '')) ||
+      sanitizeExtractedHumanText(String(parsed.rawAddress || ''), 'address');
+
     return {
       trackingNumber: sanitizeTrackingInput(String(parsed.trackingNumber || '')),
-      recipientName: String(parsed.recipientName || '').trim(),
-      recipientPhone: String(parsed.recipientPhone || '').replace(/\D/g, ''),
-      rawAddress: String(parsed.rawAddress || '').trim(),
-      neighborhood: String(parsed.neighborhood || 'Medellín').trim() || 'Medellín'
+      recipientName: validName || '',
+      recipientPhone: normalizeColombianPhone(String(parsed.recipientPhone || '')),
+      rawAddress: validAddr || '',
+      neighborhood: sanitizeExtractedHumanText(String(parsed.neighborhood || 'Medellín'), 'name'),
+      modelUsed: routerRes.modelUsed,
     };
   } catch {
     return null;
@@ -274,314 +384,372 @@ async function analyzeLabelWithGeminiVision(
 }
 
 /**
- * CAPA 3: Extractor heurístico especializado en etiquetas iMile Colombia (Shein/Temu)
- * a partir del texto crudo de OCR (`Tesseract.js`).
+ * Anclaje Espacial por Teléfono (`573\d{9}`) sobre texto OCR crudo de un ángulo dado:
+ * En las etiquetas de iMile Colombia, el bloque "TO" tiene 3 líneas consecutivas:
+ *   - Línea superior al celular: Nombre del destinatario (`alba lucia lopera castrillon`)
+ *   - Línea central (Ancla): Teléfono `573\d{9}` seguido de `/` (`573225873762/`)
+ *   - Línea inferior al celular: Dirección + Municipio (`carrera 43c #100 52 MEDELLIN ANTIOQUIA`)
  */
-export function extractIMileFieldsFromOCRText(rawOcrText: string): {
+export function parseIMileOcrTextStrict(rawOcrText: string): {
   trackingNumber: string;
   recipientName: string;
   recipientPhone: string;
   rawAddress: string;
   neighborhood: string;
+  qualityScore: number;
 } {
-  const normalizedText = (rawOcrText || '')
+  const fixedText = applyLearnedThermalOcrFixes(rawOcrText || '');
+  const normalizedLines = fixedText
     .replace(/\r/g, '\n')
-    .replace(/[|¦]/g, ' ')
-    .trim();
-
-  const lines = normalizedText
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.length > 1);
 
-  // 1. Guía iMile (`trackingNumber`):
-  // Prioridad A: Guía iMile Colombia que empieza por 61 (12 a 15 dígitos, ej. 6103026696672)
+  const fullJoined = normalizedLines.join('\n');
+
+  // 1. Buscar número de guía iMile (12 a 15 dígitos, priorizando prefijo 610...)
   let trackingNumber = '';
-  const compactDigitsText = normalizedText.replace(/(\d)\s+(?=\d)/g, '$1');
-  const imileTrackMatch =
-    compactDigitsText.match(/\b(61\d{10,13})\b/) ||
-    normalizedText.match(/\b(61\d{10,13})\b/) ||
-    compactDigitsText.match(/\b(\d{12,15})\b/);
-
-  if (imileTrackMatch) {
-    trackingNumber = imileTrackMatch[1];
-  } else {
-    // Prioridad B: Número grande de 4 dígitos de clasificación en esquina derecha
-    const fourDigitMatch = normalizedText.match(/(?:^|\s|#)(\d{4})(?:\s|$)/);
-    if (fourDigitMatch) {
-      trackingNumber = fourDigitMatch[1];
-    }
+  const compactDigitsMatches = fullJoined.replace(/[oO]/g, '0').match(/\b(610\d{9,11}|6\d{11,13}|\d{12,14})\b/g);
+  if (compactDigitsMatches && compactDigitsMatches.length > 0) {
+    const preferred610 = compactDigitsMatches.find((m) => m.startsWith('610'));
+    trackingNumber = preferred610 || compactDigitsMatches[0];
   }
 
-  // 2. Teléfono Celular Colombiano (`recipientPhone`):
-  // Captura `573225873762` o `3225873762` aunque tenga `/` pegado al final (`573225873762/`)
+  // 2. Buscar Teléfono Ancla (`573\d{9}` o `3\d{9}`)
   let recipientPhone = '';
   let phoneLineIndex = -1;
 
-  for (let i = 0; i < lines.length; i++) {
-    const cleanDigitsLine = lines[i].replace(/[^\d]/g, ' ');
-    const match57 = lines[i].match(/(?:57)?\s*(3\d{2}[\s.-]*\d{3}[\s.-]*\d{4})/);
-    const matchCompact = cleanDigitsLine.match(/\b(?:57)?(3\d{9})\b/);
-    if (match57 || matchCompact) {
-      const digitsOnly = (match57 ? match57[1] : matchCompact![1]).replace(/\D/g, '');
-      recipientPhone = `57${digitsOnly.slice(-10)}`;
+  for (let i = 0; i < normalizedLines.length; i++) {
+    const lineDigits = normalizedLines[i].replace(/[^\d]/g, '');
+    const m573 = lineDigits.match(/(573\d{9})/);
+    if (m573) {
+      recipientPhone = m573[1];
+      phoneLineIndex = i;
+      break;
+    }
+    const m3 = lineDigits.match(/\b(3\d{9})\b/);
+    if (m3 && lineDigits.length <= 12) {
+      recipientPhone = `57${m3[1]}`;
       phoneLineIndex = i;
       break;
     }
   }
 
   if (!recipientPhone) {
-    const globalPhoneMatch = compactDigitsText.match(/(?:57)?(3\d{9})/);
+    const globalPhoneMatch = fullJoined.match(
+      /\b(57[\s\-]*3\d{2}[\s\-]*\d{3}[\s\-]*\d{4}|3\d{2}[\s\-]*\d{3}[\s\-]*\d{4})\b/
+    );
     if (globalPhoneMatch) {
-      recipientPhone = `57${globalPhoneMatch[1]}`;
+      recipientPhone = normalizeColombianPhone(globalPhoneMatch[1]);
     }
   }
 
-  // 3. Dirección Física (`rawAddress`):
-  // Busca líneas con nomenclatura vial colombiana (Carrera, Calle, CR, CL, Diag, Transv, Circular, Av)
-  let rawAddress = '';
-  const roadRegex =
-    /\b(carrera|calle|cr|cl|cra|cll|diagonal|transversal|dg|tv|av|avenida|circular|manzana|mz|kilometro|km)\s*[0-9a-z#\-\s.,/]+/i;
-
-  for (const line of lines) {
-    const m = line.match(roadRegex);
-    if (m) {
-      rawAddress = m[0]
-        .replace(/\b(MEDELL[IÍ]N|ANTIOQUIA|COLOMBIA|ENVIGADO|ITAG[UÜ][IÍ]|BELLO|SABANETA)\b/gi, '')
-        .replace(/[/\\]+$/, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-      if (rawAddress.length >= 6) break;
-    }
-  }
-
-  // Fallback si el OCR leyó "carrera 43c #100 52" partido o en el parser de bloque TO
-  const blockFallback = parseIMileLabelBlock(normalizedText);
-  if (!rawAddress && blockFallback.rawAddress) {
-    rawAddress = blockFallback.rawAddress;
-  }
-
-  // 4. Nombre del Cliente (`recipientName`):
-  // Extrae la línea alfabética inmediatamente antes del teléfono `573...` o después de `TO`
+  // 3. Extraer Nombre y Dirección usando el Teléfono como Ancla Espacial
   let recipientName = '';
-  const noiseWordsRegex =
-    /\b(IMILE|EXPRESS|DELIVERY|STANDARD|HOME|COLOMBIA|ANTIOQUIA|MEDELLIN|TRACKING|NUMBER|WEIGHT|ORDER|SHEIN|TEMU|COD|COP)\b/i;
+  let rawAddress = '';
 
   if (phoneLineIndex >= 0) {
-    // Revisar si en la misma línea del teléfono está el nombre antes del número (ej. "alba lucia lopera / 573225873762")
-    const sameLineBeforePhone = lines[phoneLineIndex]
-      .replace(/(?:57)?\s*3\d{2}[\s.-]*\d{3}[\s.-]*\d{4}.*$/, '')
-      .replace(/\bTO\b[:\s]*/i, '')
-      .replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
+    // 3A. Revisar si en la misma línea del teléfono está el nombre antes del celular o la dirección después
+    const anchorLine = normalizedLines[phoneLineIndex];
+    const partsBySlash = anchorLine.split('/');
+    if (partsBySlash.length >= 2) {
+      const maybeAddrSameLine = normalizeCleanMedellinAddressString(partsBySlash.slice(1).join(' '));
+      if (maybeAddrSameLine) rawAddress = maybeAddrSameLine;
+    }
 
-    if (sameLineBeforePhone.length >= 4 && !noiseWordsRegex.test(sameLineBeforePhone)) {
-      recipientName = toTitleCaseName(sameLineBeforePhone);
-    } else if (phoneLineIndex > 0) {
-      // Buscar en las 1 o 2 líneas inmediatamente anteriores al teléfono
-      for (let back = 1; back <= 2; back++) {
-        const candidateIdx = phoneLineIndex - back;
-        if (candidateIdx < 0) break;
-        const candidate = lines[candidateIdx]
-          .replace(/^\bTO\b[:\s-]*/i, '')
-          .replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, ' ')
-          .replace(/\s{2,}/g, ' ')
-          .trim();
-        if (
-          candidate.length >= 4 &&
-          !/\d{3,}/.test(lines[candidateIdx]) &&
-          !noiseWordsRegex.test(candidate)
-        ) {
-          recipientName = toTitleCaseName(candidate);
-          break;
-        }
+    // 3B. Buscar Nombre en las 1-3 líneas inmediatamente superiores al teléfono
+    for (let up = phoneLineIndex - 1; up >= Math.max(0, phoneLineIndex - 3); up--) {
+      const candidateName = isValidCleanRecipientName(normalizedLines[up]);
+      if (candidateName) {
+        recipientName = candidateName;
+        break;
       }
     }
+
+    // 3C. Buscar Dirección en las 1-3 líneas inmediatamente inferiores al teléfono
+    if (!rawAddress) {
+      const belowCombined = normalizedLines
+        .slice(phoneLineIndex, Math.min(normalizedLines.length, phoneLineIndex + 4))
+        .join(' ');
+      const addrBelow = normalizeCleanMedellinAddressString(belowCombined);
+      if (addrBelow) {
+        rawAddress = addrBelow;
+      }
+    }
+  }
+
+  // 4. Si aún falta dirección o nombre, buscar en todo el bloque con el sanitizador estricto
+  if (!rawAddress) {
+    const globalAddr = normalizeCleanMedellinAddressString(fullJoined);
+    if (globalAddr) rawAddress = globalAddr;
   }
 
   if (!recipientName) {
-    // Buscar línea después de "TO"
-    const toIndex = lines.findIndex((l) => /^TO\b/i.test(l) || /\bTO:\s*/i.test(l));
-    if (toIndex !== -1) {
-      const inlineAfterTo = lines[toIndex]
-        .replace(/^.*?\bTO\b[:\s-]*/i, '')
-        .replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, ' ')
-        .trim();
-      if (inlineAfterTo.length >= 4) {
-        recipientName = toTitleCaseName(inlineAfterTo);
-      } else if (lines[toIndex + 1]) {
-        const nextLine = lines[toIndex + 1]
-          .replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, ' ')
-          .replace(/\s{2,}/g, ' ')
-          .trim();
-        if (nextLine.length >= 4) {
-          recipientName = toTitleCaseName(nextLine);
-        }
-      }
+    const parsedBlock = parseIMileLabelBlock(fullJoined);
+    if (parsedBlock.recipientName) {
+      const validated = isValidCleanRecipientName(parsedBlock.recipientName);
+      if (validated) recipientName = validated;
     }
   }
 
-  if (!recipientName && blockFallback.recipientName) {
-    recipientName = toTitleCaseName(blockFallback.recipientName);
-  }
-
-  // 5. Municipio / Barrio (`neighborhood`)
-  let neighborhood = 'Medellín';
-  if (/\bBELLO\b/i.test(normalizedText)) neighborhood = 'Bello';
-  else if (/\bENVIGADO\b/i.test(normalizedText)) neighborhood = 'Envigado';
-  else if (/\bITAG[UÜ][IÍ]\b/i.test(normalizedText)) neighborhood = 'Itagüí';
-  else if (/\bSABANETA\b/i.test(normalizedText)) neighborhood = 'Sabaneta';
-  else if (/\bPOBLADO\b/i.test(normalizedText)) neighborhood = 'El Poblado, Medellín';
-  else if (/\bLAURELES\b/i.test(normalizedText)) neighborhood = 'Laureles, Medellín';
-  else if (/\bBEL[EÉ]N\b/i.test(normalizedText)) neighborhood = 'Belén, Medellín';
+  let qualityScore = 0;
+  if (trackingNumber.length >= 12) qualityScore += 2;
+  if (recipientPhone.length >= 12) qualityScore += 3;
+  if (rawAddress.length >= 8) qualityScore += 4;
+  if (recipientName.length >= 5) qualityScore += 3;
 
   return {
-    trackingNumber: sanitizeTrackingInput(trackingNumber || blockFallback.trackingNumber || ''),
+    trackingNumber,
     recipientName,
     recipientPhone,
     rawAddress,
-    neighborhood
+    neighborhood: 'Medellín',
+    qualityScore,
   };
 }
 
-function toTitleCaseName(raw: string): string {
-  return raw
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ');
-}
-
 /**
- * Ejecuta OCR 100% Offline usando `tesseract.js` sobre la imagen pre-procesada.
+ * CAPA 3: Motor OCR Multi-Ángulo (`0°`, `90° CW`, `270° CCW`) con Tesseract.js
+ * Si en 0° no obtiene simultáneamente un nombre limpio y una dirección válida de Medellín,
+ * rota automáticamente el canvas a 90° y 270° para leer etiquetas verticales de iMile.
  */
-async function runOfflineTesseractOCR(
-  ocrProcessedDataUrl: string,
-  onStage?: ScanStageCallback
-): Promise<string> {
-  onStage?.('🧠 Ejecutando OCR Offline en etiqueta iMile...', 55);
-  const worker = await createWorker('eng');
+async function extractLabelWithMultiAngleOcrLayer3(
+  angleImages: Array<{ deg: number; dataUrl: string }>,
+  onProgress?: ScanStageCallback
+): Promise<{
+  trackingNumber: string;
+  recipientName: string;
+  recipientPhone: string;
+  rawAddress: string;
+  neighborhood: string;
+  rawOcrText: string;
+  rotationUsedDeg: number;
+}> {
+  const worker = await createWorker('spa');
+  let bestResult = {
+    trackingNumber: '',
+    recipientName: '',
+    recipientPhone: '',
+    rawAddress: '',
+    neighborhood: 'Medellín',
+    rawOcrText: '',
+    rotationUsedDeg: 0,
+    qualityScore: -1,
+  };
+
   try {
-    const ret = await worker.recognize(ocrProcessedDataUrl);
-    return ret?.data?.text || '';
-  } finally {
+    for (let i = 0; i < angleImages.length; i++) {
+      const { deg, dataUrl } = angleImages[i];
+      onProgress?.(
+        deg === 0
+          ? '🔍 Analizando bloque "TO" (Orientación 0°)...'
+          : `🔄 Etiqueta vertical detectada: Rotando ${deg}° y leyendo bloque "TO"...`,
+        55 + i * 14
+      );
+
+      const ret = await worker.recognize(dataUrl);
+      const rawText = ret?.data?.text || '';
+      const parsed = parseIMileOcrTextStrict(rawText);
+
+      // Combinar el mejor trackingNumber y recipientPhone hallados en cualquier orientación
+      const mergedTracking = parsed.trackingNumber || bestResult.trackingNumber;
+      const mergedPhone = parsed.recipientPhone || bestResult.recipientPhone;
+      const mergedName = parsed.recipientName || bestResult.recipientName;
+      const mergedAddress = parsed.rawAddress || bestResult.rawAddress;
+
+      if (parsed.qualityScore > bestResult.qualityScore) {
+        bestResult = {
+          trackingNumber: mergedTracking,
+          recipientName: mergedName,
+          recipientPhone: mergedPhone,
+          rawAddress: mergedAddress,
+          neighborhood: parsed.neighborhood,
+          rawOcrText: rawText,
+          rotationUsedDeg: deg,
+          qualityScore: parsed.qualityScore,
+        };
+      } else {
+        bestResult.trackingNumber = mergedTracking;
+        bestResult.recipientPhone = mergedPhone;
+        bestResult.recipientName = mergedName;
+        bestResult.rawAddress = mergedAddress;
+      }
+
+      // Si ya obtuvimos Nombre válido + Dirección válida + Teléfono, no necesitamos rotar más ángulos
+      if (bestResult.recipientName && bestResult.rawAddress && bestResult.recipientPhone) {
+        break;
+      }
+    }
+
     await worker.terminate();
+    return bestResult;
+  } catch {
+    try {
+      await worker.terminate();
+    } catch {
+      // Ignore
+    }
+    return bestResult;
   }
 }
 
 /**
- * FUNCIÓN PRINCIPAL DE ESCANEO INTELIGENTE EN CASCADA (Capas 1 + 2 + 3).
+ * PIPELINE PRINCIPAL v6.0: Escanea una etiqueta física de iMile combinando:
+ * 1. Detección de Código de Barras Multi-Ángulo (0° y 90°) + Instant Recall (0ms en Memoria de Ruta)
+ * 2. Router Multi-Modelo Gemini Free-Tier con Few-Shot Learning (si hay internet y cuota gratuita segura)
+ * 3. Motor OCR Multi-Ángulo (0° / 90° / 270°) con Ancla de Teléfono (`573...`) y Sanitizador Estricto Anti-Basura
  */
 export async function scanIMileLabelSmart(
   source: File | Blob | HTMLVideoElement | string,
-  onStage?: ScanStageCallback
+  onStageUpdate?: ScanStageCallback
 ): Promise<SmartLabelScanResult> {
   const startTime = performance.now();
 
-  onStage?.('🔍 Pre-procesando etiqueta y enfocando contraste...', 15);
-  const { previewDataUrl, ocrProcessedDataUrl, canvasElement } =
-    await prepareLabelImagesFromSource(source);
+  onStageUpdate?.('📸 Optimizando imagen y orientaciones (0° / 90°)...', 12);
+  const {
+    previewDataUrl,
+    ocrProcessedDataUrl,
+    ocrRotated90DataUrl,
+    ocrRotated270DataUrl,
+    canvasElement,
+    canvasRotated90,
+  } = await prepareLabelImagesFromSource(source);
 
-  onStage?.('🔍 Leyendo código de barras y bloque "TO"...', 30);
-  const hardwareBarcode = await detectBarcodeFromCanvas(canvasElement, previewDataUrl);
+  // CAPA 1: Lector de Barras en 0° y 90°
+  onStageUpdate?.('⚡ Leyendo código de barras 1D/QR...', 25);
+  const barcodePromise = detectBarcodeLayer1(
+    [canvasElement, canvasRotated90],
+    [previewDataUrl, ocrRotated90DataUrl]
+  );
 
-  const visionConfig = getSmartVisionConfig();
-  let trackingNumber = hardwareBarcode;
-  let recipientName = '';
-  let recipientPhone = '';
-  let rawAddress = '';
-  let neighborhood = 'Medellín';
-  let engineUsed: SmartLabelScanResult['engineUsed'] = 'offline_tesseract_ocr';
-  let engineBadge = '⚡ Autocompletado por OCR Offline + Barcode';
+  // CAPA 2: Enrutador Multi-Modelo Gemini Free-Tier (con Few-Shot) en paralelo
+  onStageUpdate?.('🧠 Consultando Router IA Free-Tier + Memoria de Ruta...', 38);
+  const aiVisionPromise = extractLabelWithGeminiRouterLayer2(previewDataUrl);
+
+  const [barcodeDetected, aiResult] = await Promise.all([barcodePromise, aiVisionPromise]);
+
+  let finalTracking = barcodeDetected || aiResult?.trackingNumber || '';
+  let finalName = aiResult?.recipientName || '';
+  let finalPhone = aiResult?.recipientPhone || '';
+  let finalAddress = aiResult?.rawAddress || '';
+  let finalNeighborhood = aiResult?.neighborhood || 'Medellín';
   let rawOcrText = '';
+  let rotationUsedDeg = 0;
+  let recalledFromMemory = false;
+  let engineUsed: SmartLabelScanResult['engineUsed'] = aiResult?.rawAddress
+    ? 'hybrid_ai_vision'
+    : 'offline_tesseract_ocr';
+  let engineBadge = aiResult?.modelUsed
+    ? `✨ IA Vision (${aiResult.modelUsed} Free-Tier)`
+    : '⚡ Motor Multi-Ángulo OCR + Ancla TO';
 
-  // CAPA 2: Si hay internet y API Key de Gemini Flash Vision configurada
-  if (visionConfig.hasAiVisionKey && (typeof navigator === 'undefined' || navigator.onLine)) {
-    onStage?.('🧠 Interpretando Nombre, Celular y Dirección con IA Vision...', 50);
-    const aiResult = await analyzeLabelWithGeminiVision(
-      previewDataUrl,
-      visionConfig.geminiApiKey
+  // CAPA MEMORIA INSTANTÁNEA (Instant Recall en 0ms si ya tenemos guía o teléfono)
+  if (finalTracking || finalPhone) {
+    const memoryMatch = await recallFromLearnedMemory({
+      trackingNumber: finalTracking,
+      recipientPhone: finalPhone,
+    });
+    if (memoryMatch && memoryMatch.matched) {
+      finalName = finalName || memoryMatch.recipientName;
+      finalPhone = finalPhone || memoryMatch.recipientPhone;
+      finalAddress = finalAddress || memoryMatch.rawAddress;
+      finalNeighborhood = memoryMatch.neighborhood || finalNeighborhood;
+      finalTracking = finalTracking || memoryMatch.trackingNumber || '';
+      rotationUsedDeg = memoryMatch.preferredRotationDeg;
+      recalledFromMemory = true;
+      engineUsed = 'learned_memory_recall';
+      engineBadge = memoryMatch.badgeText;
+    }
+  }
+
+  // CAPA 3: Si aún falta Dirección o Nombre limpio, ejecutar Motor OCR Multi-Ángulo (0°, 90°, 270°)
+  if (!finalAddress || !finalName || !finalPhone) {
+    const ocrResult = await extractLabelWithMultiAngleOcrLayer3(
+      [
+        { deg: 0, dataUrl: ocrProcessedDataUrl },
+        { deg: 90, dataUrl: ocrRotated90DataUrl },
+        { deg: 270, dataUrl: ocrRotated270DataUrl },
+      ],
+      onStageUpdate
     );
-    if (aiResult && (aiResult.rawAddress || aiResult.recipientName || aiResult.trackingNumber)) {
-      trackingNumber =
-        hardwareBarcode && hardwareBarcode.length >= 10
-          ? hardwareBarcode
-          : aiResult.trackingNumber || hardwareBarcode;
-      recipientName = aiResult.recipientName || '';
-      recipientPhone = aiResult.recipientPhone || '';
-      rawAddress = aiResult.rawAddress || '';
-      neighborhood = aiResult.neighborhood || 'Medellín';
-      engineUsed = 'hybrid_ai_vision';
-      engineBadge = '✨ Autocompletado por Cámara IA Vision (Gemini Flash)';
+
+    rawOcrText = ocrResult.rawOcrText;
+    rotationUsedDeg = ocrResult.rotationUsedDeg;
+
+    if (!finalTracking && ocrResult.trackingNumber) {
+      finalTracking = ocrResult.trackingNumber;
+    }
+    if (!finalPhone && ocrResult.recipientPhone) {
+      finalPhone = ocrResult.recipientPhone;
+    }
+    if (!finalName && ocrResult.recipientName) {
+      finalName = ocrResult.recipientName;
+    }
+    if (!finalAddress && ocrResult.rawAddress) {
+      finalAddress = ocrResult.rawAddress;
+    }
+
+    // Volver a consultar Memoria de Ruta con el teléfono o guía recién extraídos por OCR
+    if ((!finalName || !finalAddress) && (finalTracking || finalPhone)) {
+      const memoryAfterOcr = await recallFromLearnedMemory({
+        trackingNumber: finalTracking,
+        recipientPhone: finalPhone,
+      });
+      if (memoryAfterOcr && memoryAfterOcr.matched) {
+        finalName = finalName || memoryAfterOcr.recipientName;
+        finalPhone = finalPhone || memoryAfterOcr.recipientPhone;
+        finalAddress = finalAddress || memoryAfterOcr.rawAddress;
+        finalNeighborhood = memoryAfterOcr.neighborhood || finalNeighborhood;
+        finalTracking = finalTracking || memoryAfterOcr.trackingNumber || '';
+        recalledFromMemory = true;
+        engineUsed = 'learned_memory_recall';
+        engineBadge = memoryAfterOcr.badgeText;
+      }
     }
   }
 
-  // CAPA 3: Motor OCR 100% Offline (`Tesseract.js` + Heurística iMile) si no se usó IA o faltan datos del bloque TO
-  if (!rawAddress || !recipientPhone || !recipientName || !trackingNumber) {
-    onStage?.('🧠 Interpretando Nombre, Celular y Dirección (Motor OCR Local)...', 65);
-    try {
-      rawOcrText = await runOfflineTesseractOCR(ocrProcessedDataUrl, onStage);
-      const ocrFields = extractIMileFieldsFromOCRText(rawOcrText);
+  // Validación final estricta Anti-Basura (jamás permitir basura en Nombre ni Dirección)
+  finalTracking = sanitizeTrackingInput(finalTracking);
+  finalPhone = normalizeColombianPhone(finalPhone);
+  finalName = isValidCleanRecipientName(finalName) || '';
+  finalAddress =
+    normalizeCleanMedellinAddressString(finalAddress) ||
+    sanitizeExtractedHumanText(finalAddress, 'address');
 
-      if (!trackingNumber || (trackingNumber.length < 10 && ocrFields.trackingNumber.length >= 10)) {
-        trackingNumber = ocrFields.trackingNumber || trackingNumber;
-      }
-      if (!recipientName && ocrFields.recipientName) {
-        recipientName = ocrFields.recipientName;
-      }
-      if (!recipientPhone && ocrFields.recipientPhone) {
-        recipientPhone = ocrFields.recipientPhone;
-      }
-      if (!rawAddress && ocrFields.rawAddress) {
-        rawAddress = ocrFields.rawAddress;
-      }
-      if (neighborhood === 'Medellín' && ocrFields.neighborhood) {
-        neighborhood = ocrFields.neighborhood;
-      }
-    } catch {
-      // Si el OCR falla, mantenemos lo que haya capturado la Capa 1/2
-    }
-  }
-
-  const finalTracking = sanitizeTrackingInput(trackingNumber);
-  const lastFourDigits = extractLastFourDigits(finalTracking || '0000');
-
-  // Normalizar dirección difícil y deducir Comuna / Barrio / Alerta de Loma en Medellín
   let comunaName = '';
   let terrainWarning = '';
-  if (rawAddress) {
-    const intel = inferMedellinComunaAndNormalizeAddress(rawAddress, neighborhood);
-    rawAddress = intel.normalizedAddress || rawAddress;
-    if (neighborhood === 'Medellín' && intel.inferredNeighborhood) {
-      neighborhood = intel.inferredNeighborhood;
+  if (finalAddress) {
+    const medellinIntel = inferMedellinComunaAndNormalizeAddress(finalAddress);
+    if (!finalNeighborhood || finalNeighborhood === 'Medellín') {
+      finalNeighborhood = medellinIntel.inferredNeighborhood;
     }
-    comunaName = intel.comunaName;
-    terrainWarning = intel.terrainWarning;
+    comunaName = medellinIntel.comunaName;
+    terrainWarning = medellinIntel.terrainWarning;
   }
 
   let fieldsDetectedCount = 0;
   if (finalTracking) fieldsDetectedCount++;
-  if (recipientName) fieldsDetectedCount++;
-  if (recipientPhone) fieldsDetectedCount++;
-  if (rawAddress) fieldsDetectedCount++;
+  if (finalName) fieldsDetectedCount++;
+  if (finalPhone) fieldsDetectedCount++;
+  if (finalAddress) fieldsDetectedCount++;
 
-  if (fieldsDetectedCount === 1 && finalTracking && !rawAddress && !recipientName) {
+  if (fieldsDetectedCount === 1 && finalTracking && !finalAddress && !finalName) {
     engineUsed = 'barcode_only';
-    engineBadge = '📷 Código de barras detectado';
+    engineBadge = '⚡ Código de Barras Leído';
+  } else if (rotationUsedDeg !== 0 && !recalledFromMemory) {
+    engineBadge = `🔄 Auto-Rotación ${rotationUsedDeg}° + Ancla TO`;
   }
 
   const durationMs = Math.round(performance.now() - startTime);
-  onStage?.('✅ ¡Etiqueta interpretada!', 100);
+  onStageUpdate?.('✨ ¡Lectura inteligente completada!', 100);
 
   return {
     trackingNumber: finalTracking,
-    lastFourDigits,
-    recipientName,
-    recipientPhone,
-    rawAddress,
-    neighborhood,
+    lastFourDigits: extractLastFourDigits(finalTracking),
+    recipientName: finalName,
+    recipientPhone: finalPhone,
+    rawAddress: finalAddress,
+    neighborhood: finalNeighborhood,
     comunaName,
     terrainWarning,
     engineUsed,
@@ -589,6 +757,8 @@ export async function scanIMileLabelSmart(
     durationMs,
     previewDataUrl,
     rawOcrText,
-    fieldsDetectedCount
+    fieldsDetectedCount,
+    rotationUsedDeg,
+    recalledFromMemory,
   };
 }

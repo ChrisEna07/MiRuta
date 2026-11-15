@@ -22,6 +22,7 @@ import {
   ScanLine,
   Aperture,
   ZoomIn,
+  Zap,
 } from 'lucide-react';
 import {
   db,
@@ -35,6 +36,7 @@ import {
 import { parseMedellinAddress, parseIMileLabelBlock } from '../utils/addressParser';
 import { estimateMedellinCoordinatesFromAddress } from '../utils/routeOptimizer';
 import { formatCOP } from '../utils/mediaAndFeedback';
+import { playScannerLaserBeep } from '../utils/scannerSound';
 import {
   sanitizeTrackingInput,
   validateAndFormatColombianPhone,
@@ -43,6 +45,12 @@ import {
   scanIMileLabelSmart,
   getSmartVisionConfig,
 } from '../services/smartLabelScanner';
+import {
+  recallFromLearnedMemory,
+  learnFromConfirmedPackage,
+  getLearningEngineStats,
+  ensureBaselineLearnedPatterns,
+} from '../services/labelLearningEngine';
 import { inferMedellinComunaAndNormalizeAddress } from '../services/aiCopilotService';
 import { syncToSupabase } from '../services/supabaseSync';
 import { useToast } from './ui/FeedbackSystem';
@@ -89,11 +97,18 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [zoomThumbOpen, setZoomThumbOpen] = useState<boolean>(false);
   const [autoFilledFields, setAutoFilledFields] = useState<AutoFilledFlags>({});
   const [smartEngineBadge, setSmartEngineBadge] = useState<string>('');
+  const [burstMode, setBurstMode] = useState<boolean>(false);
+  const [learningBadge, setLearningBadge] = useState<string>(
+    '🧠 IA Entrenada con etiquetas iMile (Precisión optimizada)'
+  );
+  const [lastRawOcrText, setLastRawOcrText] = useState<string>('');
+  const [lastRotationDeg, setLastRotationDeg] = useState<number>(90);
 
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'ready'>('idle');
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
+  const lastDecodedBarcodeRef = useRef<string>('');
   const scannerContainerId = 'miruta-barcode-reader-region';
 
   const todayShiftId = getTodayShiftId();
@@ -119,22 +134,75 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     );
   }, [trackingNumber, todayPackages, editingPackageId]);
 
+  const refreshLearningStats = async () => {
+    await ensureBaselineLearnedPatterns();
+    const stats = await getLearningEngineStats();
+    setLearningBadge(stats.badgeLabel);
+  };
+
   useEffect(() => {
     if (!isOpen) {
       stopCameraScanner();
       setEditingPackageId(null);
       setIsAnalyzingLabel(false);
       setFrozenFramePreview('');
+      lastDecodedBarcodeRef.current = '';
+    } else {
+      refreshLearningStats();
+      // Auto-arranque de cámara trasera a 15fps apenas se abre el modal
+      if (activeScannerTab === 'live') {
+        startCameraScanner();
+      }
     }
     return () => {
       stopCameraScanner();
     };
   }, [isOpen]);
 
+  // Memoria Instantánea (0ms): Si se detecta o digita un teléfono o guía ya conocido, autocompletar en vivo
+  useEffect(() => {
+    const cleanPhone = normalizeColombianPhone(recipientPhone);
+    const cleanTrack = sanitizeTrackingInput(trackingNumber);
+    if (cleanPhone.length < 10 && cleanTrack.length < 10) return;
+    if (recipientName.trim() && rawAddress.trim()) return;
+
+    let cancelled = false;
+    recallFromLearnedMemory({
+      trackingNumber: cleanTrack,
+      recipientPhone: cleanPhone,
+    }).then((match) => {
+      if (cancelled || !match || !match.matched) return;
+      const flags: AutoFilledFlags = {};
+      if (!recipientName.trim() && match.recipientName) {
+        setRecipientName(match.recipientName);
+        flags.recipientName = true;
+      }
+      if (!rawAddress.trim() && match.rawAddress) {
+        setRawAddress(match.rawAddress);
+        flags.rawAddress = true;
+      }
+      if (!recipientPhone.trim() && match.recipientPhone) {
+        const fmt = validateAndFormatColombianPhone(match.recipientPhone);
+        setRecipientPhone(fmt.formatted);
+        flags.recipientPhone = true;
+      }
+      if (match.neighborhood) {
+        setNeighborhood(match.neighborhood);
+      }
+      setSmartEngineBadge(match.badgeText);
+      setAutoFilledFields((prev) => ({ ...prev, ...flags }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [trackingNumber, recipientPhone]);
+
   const startCameraScanner = async () => {
     setCameraError('');
     setFrozenFramePreview('');
     try {
+      await stopCameraScanner();
       setCameraActive(true);
       setTimeout(async () => {
         try {
@@ -146,18 +214,44 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               fps: 15,
               qrbox: { width: 260, height: 115 },
             },
-            (decodedText) => {
+            async (decodedText) => {
               const clean = sanitizeTrackingInput(decodedText);
-              if (clean && !isAnalyzingLabel) {
+              if (
+                clean &&
+                clean.length >= 8 &&
+                !isAnalyzingLabel &&
+                lastDecodedBarcodeRef.current !== clean
+              ) {
+                lastDecodedBarcodeRef.current = clean;
+                playScannerLaserBeep();
                 setTrackingNumber(clean);
                 setAutoFilledFields((prev) => ({ ...prev, trackingNumber: true }));
-                if (typeof navigator !== 'undefined' && navigator.vibrate) {
-                  navigator.vibrate(75);
+
+                // Consultar en 0ms si la guía ya tiene patrón aprendido en la Memoria de Ruta
+                const recalled = await recallFromLearnedMemory({ trackingNumber: clean });
+                if (recalled && recalled.matched) {
+                  setRecipientName(recalled.recipientName);
+                  const fmtPhone = validateAndFormatColombianPhone(recalled.recipientPhone);
+                  setRecipientPhone(fmtPhone.formatted);
+                  setRawAddress(recalled.rawAddress);
+                  setNeighborhood(recalled.neighborhood || 'Medellín');
+                  setSmartEngineBadge(recalled.badgeText);
+                  setAutoFilledFields({
+                    trackingNumber: true,
+                    recipientName: true,
+                    recipientPhone: true,
+                    rawAddress: true,
+                  });
+                  toast.success(
+                    `🔫 BEEP! Guía #${extractLastFourDigits(clean)} reconocida en 0ms`,
+                    `${recalled.recipientName} • ${recalled.rawAddress}`
+                  );
+                } else {
+                  toast.info(
+                    `🔫 BEEP! Guía #${extractLastFourDigits(clean)} leída`,
+                    'Pulsa "📸 CAPTURAR ETIQUETA COMPLETA" para leer Nombre, Celular y Dirección.'
+                  );
                 }
-                toast.info(
-                  `📷 Guía #${extractLastFourDigits(clean)} leída`,
-                  'Pulsa "📸 CAPTURAR ETIQUETA COMPLETA" para rellenar Nombre, Celular y Dirección.'
-                );
               }
             },
             () => {
@@ -195,14 +289,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   };
 
   /**
-   * Procesa el resultado de `scanIMileLabelSmart` y rellena el formulario con resaltado verde esmeralda
-   * y vibración doble de confirmación.
+   * Procesa el resultado de `scanIMileLabelSmart` y rellena el formulario con resaltado verde esmeralda,
+   * sonido BEEP de pistola láser y auto-guardado si el Modo Ráfaga está activo.
    */
   const applySmartLabelResultToForm = async (
     source: File | Blob | HTMLVideoElement | string
   ) => {
     setIsAnalyzingLabel(true);
-    setAnalysisStageText('🔍 Leyendo código de barras y bloque "TO"...');
+    setAnalysisStageText('🔍 Leyendo código de barras y bloque "TO" (0°/90°)...');
     setAnalysisProgress(20);
 
     try {
@@ -213,6 +307,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
       setCapturedLabelThumb(result.previewDataUrl);
       setSmartEngineBadge(result.engineBadge);
+      setLastRawOcrText(result.rawOcrText || '');
+      setLastRotationDeg(result.rotationUsedDeg ?? 90);
 
       const newFlags: AutoFilledFlags = {};
 
@@ -239,19 +335,18 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
       setAutoFilledFields((prev) => ({ ...prev, ...newFlags }));
 
-      // Vibración doble de confirmación
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate([70, 50, 110]);
+      if (result.fieldsDetectedCount >= 1) {
+        playScannerLaserBeep();
       }
 
       if (result.fieldsDetectedCount >= 2) {
         toast.success(
-          `✨ Etiqueta #${result.lastFourDigits} autocompletada (${result.durationMs}ms)`,
+          `🔫 BEEP! Etiqueta #${result.lastFourDigits} leída (${result.durationMs}ms)`,
           `${result.recipientName || 'Cliente'} • ${result.rawAddress || 'Revisa dirección'}`
         );
       } else if (result.trackingNumber) {
         toast.info(
-          `📷 Guía #${result.lastFourDigits} detectada`,
+          `🔫 BEEP! Guía #${result.lastFourDigits} detectada`,
           'Acércate un poco más al bloque "TO" o usa "📷 Foto HD" para leer dirección y teléfono.'
         );
       } else {
@@ -507,9 +602,20 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         await db.packages.add(newPkg);
         toast.success(
           `✅ Paquete #${newPkg.lastFourDigits} registrado en ruta`,
-          `${newPkg.rawAddress} • Sincronizando con Supabase`
+          `${newPkg.rawAddress} • Aprendido en Memoria de Ruta`
         );
       }
+
+      // Aprendizaje por retroalimentación en el Motor Adaptativo de Etiquetas iMile
+      await learnFromConfirmedPackage({
+        trackingNumber: finalTracking,
+        recipientName: recipientName.trim() || 'Cliente iMile',
+        recipientPhone,
+        rawAddress: rawAddress.trim(),
+        rawOcrAttempt: lastRawOcrText,
+        rotationUsedDeg: lastRotationDeg,
+      });
+      await refreshLearningStats();
 
       syncToSupabase(true).catch(() => {});
 
@@ -523,11 +629,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setCapturedLabelThumb('');
       setAutoFilledFields({});
       setSmartEngineBadge('');
+      lastDecodedBarcodeRef.current = '';
 
       setTimeout(() => {
         setSaveState('idle');
         if (!keepOpenForNext) {
           onClose();
+        } else if (activeScannerTab === 'live' && !cameraActive) {
+          startCameraScanner();
         }
       }, 900);
     } catch {
@@ -548,7 +657,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         }`}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800/60 gap-2">
+        <div className="flex items-center justify-between pb-2.5 border-b border-slate-800/60 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="p-2 rounded-xl bg-gradient-to-br from-blue-600 to-emerald-600 text-white shrink-0">
               <PackagePlus className="w-5 h-5" />
@@ -557,18 +666,28 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               <h2 className="text-base font-black leading-tight truncate">
                 {editingPackageId
                   ? 'Actualizar Guía en Ruta'
-                  : '📸 Cámara Inteligente iMile v4.5'}
+                  : '📸 Escáner Láser + IA iMile v6.0'}
               </h2>
-              <p className="text-[11px] text-slate-400 truncate">
-                {visionConfig.hasAiVisionKey
-                  ? '🟢 IA Vision + OCR Offline'
-                  : '⚡ Barcode Nativo + OCR Local Offline'}{' '}
-                • {formatCOP(activeDefaultRate)}
+              <p className="text-[10px] font-bold text-emerald-400 truncate">
+                {learningBadge}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setBurstMode((prev) => !prev)}
+              className={`px-2 py-1.5 rounded-xl font-black text-[10px] flex items-center gap-1 border transition-all ${
+                burstMode
+                  ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md'
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+              title="Modo Ráfaga: Guarda y prepara el siguiente paquete automáticamente"
+            >
+              <Zap className="w-3 h-3" />
+              <span>Ráfaga {burstMode ? 'ON' : 'OFF'}</span>
+            </button>
             {onOpenTestLab && (
               <button
                 type="button"
@@ -576,10 +695,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                   onClose();
                   onOpenTestLab();
                 }}
-                className="px-2.5 py-1.5 rounded-xl bg-purple-600/20 border border-purple-500/40 text-purple-300 font-black text-[11px] flex items-center gap-1"
+                className="px-2 py-1.5 rounded-xl bg-purple-600/20 border border-purple-500/40 text-purple-300 font-black text-[10px] flex items-center gap-1"
               >
-                <FlaskConical className="w-3.5 h-3.5" />
-                <span>Lab Test</span>
+                <FlaskConical className="w-3 h-3" />
+                <span>Lab</span>
               </button>
             )}
             <button
@@ -593,10 +712,13 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         </div>
 
         {/* Selector de Modos de Cámara Inteligente Full-Label (Pestaña A vs Pestaña B) */}
-        <div className="mt-3 grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-950/90 border border-slate-800">
+        <div className="mt-2.5 grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-950/90 border border-slate-800">
           <button
             type="button"
-            onClick={() => setActiveScannerTab('live')}
+            onClick={() => {
+              setActiveScannerTab('live');
+              startCameraScanner();
+            }}
             className={`py-2 px-2.5 rounded-xl text-[11px] font-black flex items-center justify-center gap-1.5 transition-all ${
               activeScannerTab === 'live'
                 ? 'bg-blue-600 text-white shadow-md'
@@ -604,7 +726,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             }`}
           >
             <ScanLine className="w-3.5 h-3.5 shrink-0" />
-            <span>⚡ Escáner En Vivo</span>
+            <span>⚡ Escáner En Vivo (Auto-Beep)</span>
           </button>
 
           <button

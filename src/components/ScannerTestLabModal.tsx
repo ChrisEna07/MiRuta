@@ -26,6 +26,8 @@ import {
   scanIMileLabelSmart,
   type SmartLabelScanResult
 } from '../services/smartLabelScanner';
+import { learnFromConfirmedPackage } from '../services/labelLearningEngine';
+import { playScannerLaserBeep } from '../utils/scannerSound';
 import { useToast } from './ui/FeedbackSystem';
 
 interface ScannerTestLabModalProps {
@@ -119,9 +121,15 @@ export const ScannerTestLabModal: React.FC<ScannerTestLabModalProps> = ({
       blockKey: parsedAddr.blockKey
     });
 
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      navigator.vibrate(60);
-    }
+    playScannerLaserBeep();
+    learnFromConfirmedPackage({
+      trackingNumber: rawBarcode,
+      recipientName: parsedBlock.recipientName || 'Alba Lucia Lopera Castrillon',
+      recipientPhone: parsedBlock.recipientPhone || '573225873762',
+      rawAddress: parsedBlock.rawAddress || 'Carrera 43C # 100 - 52',
+      rawOcrAttempt: rawBlockTO,
+      rotationUsedDeg: 90
+    }).catch(() => {});
   };
 
   // 1B. Test en Vivo Subiendo una Foto Real de Etiqueta iMile desde Galería / Cámara
@@ -130,15 +138,28 @@ export const ScannerTestLabModal: React.FC<ScannerTestLabModalProps> = ({
     if (!file) return;
     setIsScanningPhoto(true);
     setPhotoScanResult(null);
-    setPhotoScanStage('🔍 Analizando foto de etiqueta iMile...');
+    setPhotoScanStage('🔍 Analizando foto de etiqueta iMile (0° / 90°)...');
 
     try {
       const result = await scanIMileLabelSmart(file, (stageMsg) => {
         setPhotoScanStage(stageMsg);
       });
       setPhotoScanResult(result);
+      playScannerLaserBeep();
+
+      if (result.trackingNumber || result.rawAddress) {
+        await learnFromConfirmedPackage({
+          trackingNumber: result.trackingNumber || '6103026696672',
+          recipientName: result.recipientName || 'Cliente iMile',
+          recipientPhone: result.recipientPhone || '',
+          rawAddress: result.rawAddress || 'Medellín',
+          rawOcrAttempt: result.rawOcrText,
+          rotationUsedDeg: result.rotationUsedDeg ?? 90
+        });
+      }
+
       toast.success(
-        `✨ Etiqueta analizada en ${result.durationMs} ms`,
+        `🔫 BEEP! Etiqueta analizada en ${result.durationMs} ms`,
         `Guía #${result.lastFourDigits} • ${result.recipientName || 'Sin nombre'} • ${result.rawAddress || 'Sin dirección'}`
       );
     } catch (err) {

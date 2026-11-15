@@ -120,12 +120,28 @@ export interface BackupSnapshotRecord {
   payloadJSON: string;          // JSON serializado con packages, shifts, deductions, settlements y settings
 }
 
+export interface LearnedPatternRecord {
+  id?: number;
+  recipientPhone: string;       // Normalized e.g. '573225873762'
+  recipientName: string;        // Verified clean e.g. 'Alba Lucia Lopera Castrillon'
+  normalizedAddress: string;    // Verified clean e.g. 'CR 43C # 100 - 52'
+  neighborhood: string;         // e.g. 'Santa Cruz / Popular (Comuna 1-2)'
+  sampleTrackingNumber: string; // e.g. '6103026696672'
+  lastFourDigits: string;       // e.g. '6672'
+  ocrRawSnippet?: string;       // Raw OCR text before correction for typo learning
+  preferredRotationDeg?: number;// 0 | 90 | 270
+  toBlockRelativeBox?: { x: number; y: number; w: number; h: number };
+  confirmationsCount: number;   // Number of times confirmed/used
+  updatedAt: number;            // timestamp ms
+}
+
 export class MiRutaDB extends Dexie {
   packages!: Table<DeliveryPackage, number>;
   shifts!: Table<WorkShift, string>;
   deductions!: Table<DeductionRecord, number>;
   settlements!: Table<QuincenaSettlement, number>;
   backupSnapshots!: Table<BackupSnapshotRecord, number>;
+  learnedPatterns!: Table<LearnedPatternRecord, number>;
 
   constructor() {
     super('iMileTrackProDB_v1');
@@ -153,6 +169,15 @@ export class MiRutaDB extends Dexie {
       deductions: '++id, date, shiftId, type, applyToJuanPdf',
       settlements: '++id, &periodKey, startDate, endDate, status',
       backupSnapshots: '++id, folderDate, timestamp, triggerType'
+    });
+    this.version(5).stores({
+      packages:
+        '++id, trackingNumber, lastFourDigits, status, routeOrder, shiftId, scannedAt, deliveredAt, archivedInHistory, isTestData',
+      shifts: 'id, date, status',
+      deductions: '++id, date, shiftId, type, applyToJuanPdf',
+      settlements: '++id, &periodKey, startDate, endDate, status',
+      backupSnapshots: '++id, folderDate, timestamp, triggerType',
+      learnedPatterns: '++id, &recipientPhone, sampleTrackingNumber, lastFourDigits, updatedAt'
     });
   }
 }

@@ -5,10 +5,10 @@ import {
 } from '../db/database';
 import { parseMedellinAddress, detectSameBlockClusters } from '../utils/addressParser';
 import { formatCOP } from '../utils/mediaAndFeedback';
-
-const GEMINI_API_KEY_STORAGE = 'miruta_gemini_api_key';
-const DEFAULT_PROJECT_ID = 'projects/696217047962';
-const DEFAULT_PROJECT_NUMBER = '696217047962';
+import {
+  getGeminiCredentials,
+  invokeGeminiWithFreeTierRouter,
+} from './geminiModelRouter';
 
 export interface GeminiClientMetadata {
   apiKey: string;
@@ -19,32 +19,12 @@ export interface GeminiClientMetadata {
 }
 
 export function getGeminiClientMetadata(): GeminiClientMetadata {
-  const envMap = (import.meta as unknown as { env?: Record<string, string | undefined> }).env || {};
-  const envKey = envMap.VITE_GEMINI_API_KEY || '';
-  const storedKey =
-    typeof window !== 'undefined' ? localStorage.getItem(GEMINI_API_KEY_STORAGE) || '' : '';
-  const apiKey = (storedKey || envKey).trim();
-  const projectId = (envMap.VITE_GEMINI_PROJECT_ID || DEFAULT_PROJECT_ID).trim();
-  const projectNumber = (envMap.VITE_GEMINI_PROJECT_NUMBER || DEFAULT_PROJECT_NUMBER).trim();
-
-  let keyType: GeminiClientMetadata['keyType'] = 'none';
-  if (apiKey.startsWith('AIza')) keyType = 'standard_aiza';
-  else if (apiKey.length > 12) keyType = 'oauth_aq';
-
-  return {
-    apiKey,
-    projectId,
-    projectNumber,
-    hasKey: apiKey.length > 12,
-    keyType,
-  };
+  return getGeminiCredentials();
 }
 
 /**
- * Cliente HTTP dual para Gemini 2.5 Flash:
- * Soporta tanto llaves estándar (`AIza...`) como tokens de proyecto/OAuth (`AQ....`)
- * asociados al proyecto `projects/696217047962`.
- * Si no hay red o la llave requiere fallback, retorna `null` en < 500ms sin lanzar excepciones.
+ * Cliente HTTP conectado al Enrutador Multi-Modelo Free-Tier (`geminiModelRouter.ts`)
+ * con Escudo de Costo $0 (colchón del 20% antes del límite gratuito).
  */
 export async function invokeGeminiFlashModel(options: {
   prompt: string;
@@ -52,65 +32,13 @@ export async function invokeGeminiFlashModel(options: {
   expectJson?: boolean;
   timeoutMs?: number;
 }): Promise<string | null> {
-  const meta = getGeminiClientMetadata();
-  if (!meta.hasKey || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return null;
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? 6500);
-
-  try {
-    const parts: Array<Record<string, unknown>> = [{ text: options.prompt }];
-    if (options.base64Jpeg) {
-      parts.push({
-        inlineData: {
-          mimeType: 'image/jpeg',
-          data: options.base64Jpeg.replace(/^data:image\/\w+;base64,/, ''),
-        },
-      });
-    }
-
-    const bodyPayload: Record<string, unknown> = {
-      contents: [{ parts }],
-      generationConfig: {
-        temperature: 0.15,
-        ...(options.expectJson ? { responseMimeType: 'application/json' } : {}),
-      },
-    };
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    let endpointUrl =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-
-    if (meta.keyType === 'standard_aiza') {
-      endpointUrl += `?key=${encodeURIComponent(meta.apiKey)}`;
-    } else {
-      // Intento dual para llaves AQ.... (query param + cabecera de proyecto)
-      endpointUrl += `?key=${encodeURIComponent(meta.apiKey)}`;
-      headers['x-goog-user-project'] = meta.projectNumber;
-    }
-
-    const response = await fetch(endpointUrl, {
-      method: 'POST',
-      headers,
-      signal: controller.signal,
-      body: JSON.stringify(bodyPayload),
-    });
-
-    clearTimeout(timeoutId);
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
-  } catch {
-    clearTimeout(timeoutId);
-    return null;
-  }
+  const res = await invokeGeminiWithFreeTierRouter({
+    prompt: options.prompt,
+    inlineImageBase64: options.base64Jpeg,
+    expectJson: options.expectJson,
+    timeoutMs: options.timeoutMs ?? 4500,
+  });
+  return res ? res.text : null;
 }
 
 // ============================================================================
