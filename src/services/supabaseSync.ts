@@ -1,20 +1,25 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { db } from '../db/database';
+import { db, type BackupSnapshotRecord } from '../db/database';
 
 const SUPABASE_URL_KEY = 'miruta_supabase_url';
 const SUPABASE_ANON_KEY = 'miruta_supabase_anon_key';
 const LAST_SYNC_TS_KEY = 'miruta_last_cloud_sync_ts';
 
+// Credenciales públicas preconfiguradas del proyecto Supabase de Christian Romero
+const DEFAULT_PUBLIC_SUPABASE_URL = 'https://qsoekxdghdklwduwleuh.supabase.co';
+const DEFAULT_PUBLIC_SUPABASE_ANON_KEY = 'sb_publishable_yCl3Jo-GwtoIBjtuqhTfcw_09FPfbPP';
+
 export interface SupabaseConfigInfo {
   url: string;
   anonKey: string;
+  projectRef: string;
   isConfigured: boolean;
   lastSyncAt: number | null;
 }
 
 export function getSupabaseConfig(): SupabaseConfigInfo {
-  const envUrl = import.meta.env.VITE_SUPABASE_URL || '';
-  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+  const envUrl = import.meta.env.VITE_SUPABASE_URL || DEFAULT_PUBLIC_SUPABASE_URL;
+  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_PUBLIC_SUPABASE_ANON_KEY;
 
   const localUrl =
     typeof window !== 'undefined' ? localStorage.getItem(SUPABASE_URL_KEY) || '' : '';
@@ -26,9 +31,13 @@ export function getSupabaseConfig(): SupabaseConfigInfo {
   const lastSyncRaw =
     typeof window !== 'undefined' ? localStorage.getItem(LAST_SYNC_TS_KEY) : null;
 
+  const matchRef = url.match(/https:\/\/([^.]+)\.supabase\.co/i);
+  const projectRef = matchRef ? matchRef[1] : 'supabase';
+
   return {
     url,
     anonKey,
+    projectRef,
     isConfigured: Boolean(url && anonKey && url.startsWith('https://')),
     lastSyncAt: lastSyncRaw ? Number(lastSyncRaw) : null
   };
@@ -40,7 +49,7 @@ export function saveSupabaseCredentials(url: string, anonKey: string): void {
   localStorage.setItem(SUPABASE_ANON_KEY, anonKey.trim());
 }
 
-export function clearSupabaseCredentials(): void {
+export function resetToDefaultSupabaseCredentials(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(SUPABASE_URL_KEY);
   localStorage.removeItem(SUPABASE_ANON_KEY);
@@ -63,29 +72,66 @@ export interface SyncResult {
   message: string;
   syncedPackages: number;
   syncedShifts: number;
+  syncedSnapshots: number;
 }
 
 /**
- * Sincroniza en segundo plano los datos de IndexedDB (Dexie.js) hacia Supabase.
- * Si Supabase no está configurado o no hay internet, retorna silenciosamente sin afectar la operación local.
+ * Sube un Snapshot específico a la tabla `backup_snapshots` en Supabase.
+ */
+export async function pushSnapshotToSupabase(snapshot: BackupSnapshotRecord): Promise<boolean> {
+  const client = getClient();
+  if (!client || (typeof navigator !== 'undefined' && !navigator.onLine)) return false;
+
+  try {
+    let parsedPayload: unknown = {};
+    try {
+      parsedPayload = JSON.parse(snapshot.payloadJSON);
+    } catch {
+      parsedPayload = { raw: snapshot.payloadJSON };
+    }
+
+    const { error } = await client.from('backup_snapshots').upsert(
+      [
+        {
+          local_id: snapshot.id || null,
+          folder_date: snapshot.folderDate,
+          timestamp: snapshot.timestamp,
+          session_name: snapshot.sessionName,
+          trigger_type: snapshot.triggerType,
+          stats: snapshot.stats,
+          payload_json: parsedPayload
+        }
+      ],
+      { onConflict: 'timestamp' }
+    );
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sincroniza en segundo plano los datos de IndexedDB (Dexie.js) hacia Supabase (`qsoekxdghdklwduwleuh`).
  */
 export async function syncToSupabase(silent = true): Promise<SyncResult> {
   const client = getClient();
   if (!client) {
     return {
       ok: false,
-      message: 'Modo 100% Local activo (Supabase no configurado).',
+      message: 'Modo 100% Local activo.',
       syncedPackages: 0,
-      syncedShifts: 0
+      syncedShifts: 0,
+      syncedSnapshots: 0
     };
   }
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return {
       ok: false,
-      message: 'Sin conexión a internet. Los datos están seguros en IndexedDB local.',
+      message: 'Sin conexión a internet. Tus datos están seguros en IndexedDB local.',
       syncedPackages: 0,
-      syncedShifts: 0
+      syncedShifts: 0,
+      syncedSnapshots: 0
     };
   }
 
@@ -94,6 +140,7 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
     const allShifts = await db.shifts.toArray();
     const allDeductions = await db.deductions.toArray();
     const allSettlements = await db.settlements.toArray();
+    const allSnapshots = await db.backupSnapshots.toArray();
 
     // 1. Upsert Shifts
     if (allShifts.length > 0) {
@@ -191,6 +238,12 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       await client.from('settlements').upsert(setRows, { onConflict: 'period_key' });
     }
 
+    // 5. Upsert Backup Snapshots (últimos 15 snapshots para rapidez)
+    const recentSnapshots = allSnapshots.slice(-15);
+    for (const snap of recentSnapshots) {
+      await pushSnapshotToSupabase(snap);
+    }
+
     const nowTs = Date.now();
     if (typeof window !== 'undefined') {
       localStorage.setItem(LAST_SYNC_TS_KEY, String(nowTs));
@@ -198,19 +251,21 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
 
     return {
       ok: true,
-      message: `✅ Sincronización exitosa con Supabase (${allPackages.length} paquetes y ${allShifts.length} jornadas respaldadas).`,
+      message: `✅ Sincronizado con Supabase (${allPackages.length} paq., ${allShifts.length} jornadas, ${recentSnapshots.length} backups).`,
       syncedPackages: allPackages.length,
-      syncedShifts: allShifts.length
+      syncedShifts: allShifts.length,
+      syncedSnapshots: recentSnapshots.length
     };
   } catch (err) {
     return {
       ok: false,
       message:
         err instanceof Error
-          ? `Error sincronizando con Supabase: ${err.message}`
-          : 'No se pudo conectar a Supabase. Revisa las tablas con supabase_schema.sql.',
+          ? `Aviso Supabase: ${err.message} (Ejecuta supabase_schema.sql en el SQL Editor si es tu primera vez).`
+          : 'No se pudo sincronizar con Supabase. Tus datos siguen 100% seguros en IndexedDB local.',
       syncedPackages: 0,
-      syncedShifts: 0
+      syncedShifts: 0,
+      syncedSnapshots: 0
     };
   }
 }

@@ -282,23 +282,23 @@ export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = (
           )}
         </div>
 
-        {/* Filtros Rápidos por Fecha */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+        {/* Filtros Rápidos por Fecha (Sin scrollbar horizontal gris) */}
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 no-scrollbar">
           {[
             { id: 'all', label: 'Todo' },
             { id: 'today', label: 'Hoy' },
             { id: 'yesterday', label: 'Ayer' },
-            { id: 'this_quincena', label: 'Esta Quincena' },
-            { id: 'last_month', label: 'Mes Pasado' },
+            { id: 'this_quincena', label: 'Quincena' },
+            { id: 'last_month', label: 'Mes Ant.' },
             { id: 'custom', label: 'Rango' }
           ].map((item) => (
             <button
               key={item.id}
               type="button"
               onClick={() => setDateFilter(item.id as DateFilterMode)}
-              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap border transition-all ${
+              className={`px-2 py-1.5 rounded-xl text-[11px] font-black text-center truncate border transition-all ${
                 dateFilter === item.id
-                  ? 'bg-blue-600 border-blue-500 text-white'
+                  ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
                   : 'bg-slate-800/70 border-slate-700 text-slate-300'
               }`}
             >
