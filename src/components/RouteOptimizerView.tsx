@@ -41,14 +41,16 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   const [optimizingStatus, setOptimizingStatus] = useState<string>('');
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
 
-  const orderedPackages = [...packages].sort((a, b) => {
+  const unarchivedPackages = packages.filter((p) => !p.archivedInHistory);
+
+  const orderedPackages = [...unarchivedPackages].sort((a, b) => {
     const aDone = a.status === 'delivered' || a.status === 'issue' ? 1 : 0;
     const bDone = b.status === 'delivered' || b.status === 'issue' ? 1 : 0;
     if (aDone !== bDone) return aDone - bDone;
     return (a.routeOrder || 0) - (b.routeOrder || 0);
   });
 
-  const sameBlockAlerts = detectSameBlockClusters(packages);
+  const sameBlockAlerts = detectSameBlockClusters(unarchivedPackages);
 
   const handleOfflineOptimize = async () => {
     setIsOptimizing(true);

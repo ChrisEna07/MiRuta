@@ -11,7 +11,8 @@ import {
   Phone,
   MapPin,
   User,
-  Hash
+  Hash,
+  FlaskConical
 } from 'lucide-react';
 import {
   db,
@@ -29,12 +30,14 @@ import { formatCOP } from '../utils/mediaAndFeedback';
 interface ScannerModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenTestLab?: () => void;
   highContrastSun: boolean;
 }
 
 export const ScannerModal: React.FC<ScannerModalProps> = ({
   isOpen,
   onClose,
+  onOpenTestLab,
   highContrastSun
 }) => {
   const [trackingNumber, setTrackingNumber] = useState<string>('');
@@ -210,7 +213,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       issueNote: '',
       rate: getDefaultPackageRate(),
       shiftId,
-      scannedAt: Date.now()
+      scannedAt: Date.now(),
+      archivedInHistory: false
     };
     newPkg.coordinates = estimateMedellinCoordinatesFromAddress(newPkg);
 
@@ -245,27 +249,43 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         }`}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800/60">
-          <div className="flex items-center gap-2">
-            <div className="p-2 rounded-xl bg-blue-600 text-white">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800/60 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-2 rounded-xl bg-blue-600 text-white shrink-0">
               <PackagePlus className="w-5 h-5" />
             </div>
-            <div>
-              <h2 className="text-base font-black leading-tight">
+            <div className="min-w-0">
+              <h2 className="text-base font-black leading-tight truncate">
                 Escanear Guía en MiRuta
               </h2>
               <p className="text-xs text-slate-400">
-                Tarifa activa: {formatCOP(activeDefaultRate)} COP • Guardado Offline
+                Tarifa activa: {formatCOP(activeDefaultRate)} COP • 100% Offline
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onOpenTestLab && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenTestLab();
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-purple-600/20 border border-purple-500/40 text-purple-300 font-black text-[11px] flex items-center gap-1"
+              >
+                <FlaskConical className="w-3.5 h-3.5" />
+                <span>Lab Test</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {savedBanner && (
@@ -314,7 +334,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           <div className="flex items-center justify-between gap-2 mb-1.5">
             <span className="text-xs font-extrabold flex items-center gap-1 text-blue-400">
               <Sparkles className="w-3.5 h-3.5" />
-              Captura Rápida Bloque "TO" (Voz o Pegar Texto)
+              Captura Rápida Bloque &quot;TO&quot; (Voz o Pegar Texto)
             </span>
             <button
               type="button"
@@ -346,7 +366,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 setSmartBlockText(e.target.value);
                 applySmartBlockParse(e.target.value);
               }}
-              placeholder="Ej: Alba Lucia Lopera 3004128890 Carrera 43c #100 52"
+              placeholder="Ej: Alba Lucia Lopera 573225873762 Carrera 43c #100 52"
               className={`w-full rounded-xl px-3 py-2 text-xs font-medium border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                 highContrastSun
                   ? 'bg-white border-slate-300 text-slate-950'
@@ -449,7 +469,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 inputMode="tel"
                 value={recipientPhone}
                 onChange={(e) => setRecipientPhone(e.target.value)}
-                placeholder="300 412 8890"
+                placeholder="322 587 3762"
                 className={`w-full rounded-xl px-3 py-2 text-sm font-mono font-bold border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                   highContrastSun
                     ? 'bg-white border-slate-300 text-slate-950'

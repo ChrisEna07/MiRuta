@@ -5,6 +5,7 @@ import {
   Navigation2,
   ListOrdered,
   QrCode,
+  History,
   FileSpreadsheet,
   Settings
 } from 'lucide-react';
@@ -14,15 +15,18 @@ import { DynamicHeader } from './components/DynamicHeader';
 import { ProfitabilityMeter } from './components/ProfitabilityMeter';
 import { PilotModeView } from './components/PilotModeView';
 import { RouteOptimizerView } from './components/RouteOptimizerView';
+import { TraceabilityHistoryView } from './components/TraceabilityHistoryView';
 import { QuincenaAccountingView } from './components/QuincenaAccountingView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { ScannerModal } from './components/ScannerModal';
+import { ScannerTestLabModal } from './components/ScannerTestLabModal';
 
-type ActiveTab = 'pilot' | 'route' | 'quincena' | 'settings';
+type ActiveTab = 'pilot' | 'route' | 'history' | 'quincena' | 'settings';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('pilot');
   const [scannerOpen, setScannerOpen] = useState<boolean>(false);
+  const [testLabOpen, setTestLabOpen] = useState<boolean>(false);
   const [highContrastSun, setHighContrastSun] = useState<boolean>(false);
 
   const todayShiftId = getTodayShiftId();
@@ -51,7 +55,7 @@ export function App() {
   );
 
   const pendingCount = todayPackages.filter(
-    (p) => p.status === 'pending' || p.status === 'in_progress'
+    (p) => !p.archivedInHistory && (p.status === 'pending' || p.status === 'in_progress')
   ).length;
 
   return (
@@ -68,7 +72,7 @@ export function App() {
         onToggleContrast={() => setHighContrastSun((prev) => !prev)}
       />
 
-      {/* 2. Medidor de Desempeño y Semáforo de Rentabilidad en Vivo */}
+      {/* 2. Medidor de Desempeño, Semáforo y Cierre de Jornada */}
       <ProfitabilityMeter
         packages={todayPackages}
         shift={todayShift}
@@ -110,6 +114,18 @@ export function App() {
             </motion.div>
           )}
 
+          {activeTab === 'history' && (
+            <motion.div
+              key="history"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.16 }}
+            >
+              <TraceabilityHistoryView highContrastSun={highContrastSun} />
+            </motion.div>
+          )}
+
           {activeTab === 'quincena' && (
             <motion.div
               key="quincena"
@@ -130,7 +146,10 @@ export function App() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.16 }}
             >
-              <SettingsBackupView highContrastSun={highContrastSun} />
+              <SettingsBackupView
+                highContrastSun={highContrastSun}
+                onOpenTestLab={() => setTestLabOpen(true)}
+              />
             </motion.div>
           )}
         </AnimatePresence>
@@ -140,10 +159,18 @@ export function App() {
       <ScannerModal
         isOpen={scannerOpen}
         onClose={() => setScannerOpen(false)}
+        onOpenTestLab={() => setTestLabOpen(true)}
         highContrastSun={highContrastSun}
       />
 
-      {/* Barra de Navegación Inferior Táctica (Optimizada para Android y 1 mano) */}
+      {/* Modal de Laboratorio de Pruebas y Benchmark de Escáner */}
+      <ScannerTestLabModal
+        isOpen={testLabOpen}
+        onClose={() => setTestLabOpen(false)}
+        highContrastSun={highContrastSun}
+      />
+
+      {/* Barra de Navegación Inferior Táctica (6 Accesos: Piloto, Ruta, Escanear, Historial, Quincena, Ajustes) */}
       <nav
         className={`fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-lg pb-safe ${
           highContrastSun
@@ -151,70 +178,83 @@ export function App() {
             : 'bg-slate-900/95 border-slate-800 text-slate-300'
         }`}
       >
-        <div className="max-w-lg mx-auto px-3 py-1.5 grid grid-cols-5 items-center gap-1">
+        <div className="max-w-lg mx-auto px-2 py-1.5 grid grid-cols-6 items-center gap-1">
           <button
             type="button"
             onClick={() => setActiveTab('pilot')}
-            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[11px] transition-all ${
+            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[10px] transition-all ${
               activeTab === 'pilot'
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                 : 'hover:bg-slate-800/50'
             }`}
           >
-            <Navigation2 className="w-5 h-5" />
+            <Navigation2 className="w-4 h-4" />
             <span>Piloto</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('route')}
-            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[11px] relative transition-all ${
+            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[10px] relative transition-all ${
               activeTab === 'route'
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                 : 'hover:bg-slate-800/50'
             }`}
           >
-            <ListOrdered className="w-5 h-5" />
+            <ListOrdered className="w-4 h-4" />
             <span>Ruta ({pendingCount})</span>
           </button>
 
           {/* Botón Central Flotante: Escanear Guía */}
-          <div className="flex justify-center -mt-5">
+          <div className="flex justify-center -mt-4">
             <button
               type="button"
               onClick={() => setScannerOpen(true)}
-              className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-600 to-green-500 text-slate-950 font-black flex flex-col items-center justify-center shadow-xl shadow-emerald-600/40 border-2 border-emerald-300 active:scale-95 transition-transform"
+              className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-green-500 text-slate-950 font-black flex flex-col items-center justify-center shadow-xl shadow-emerald-600/40 border-2 border-emerald-300 active:scale-95 transition-transform"
             >
-              <QrCode className="w-6 h-6 stroke-[2.5]" />
-              <span className="text-[9px] font-black uppercase leading-none mt-0.5">
-                Escanear
+              <QrCode className="w-5 h-5 stroke-[2.5]" />
+              <span className="text-[8px] font-black uppercase leading-none mt-0.5">
+                Scan
               </span>
             </button>
           </div>
 
           <button
             type="button"
+            onClick={() => setActiveTab('history')}
+            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[10px] transition-all ${
+              activeTab === 'history'
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                : 'hover:bg-slate-800/50'
+            }`}
+          >
+            <History className="w-4 h-4" />
+            <span>Historial</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('quincena')}
-            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[11px] transition-all ${
+            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[10px] transition-all ${
               activeTab === 'quincena'
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                 : 'hover:bg-slate-800/50'
             }`}
           >
-            <FileSpreadsheet className="w-5 h-5" />
+            <FileSpreadsheet className="w-4 h-4" />
             <span>Quincena</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('settings')}
-            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[11px] transition-all ${
+            className={`py-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 font-extrabold text-[10px] transition-all ${
               activeTab === 'settings'
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                 : 'hover:bg-slate-800/50'
             }`}
           >
-            <Settings className="w-5 h-5" />
+            <Settings className="w-4 h-4" />
             <span>Ajustes</span>
           </button>
         </div>

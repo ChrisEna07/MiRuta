@@ -28,6 +28,7 @@ import {
   formatCOP
 } from '../utils/mediaAndFeedback';
 import { detectSameBlockClusters } from '../utils/addressParser';
+import { syncToSupabase } from '../services/supabaseSync';
 
 interface PilotModeViewProps {
   packages: DeliveryPackage[];
@@ -53,8 +54,9 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
 
   const defaultRate = getDefaultPackageRate();
 
+  // Solo mostrar en la cola activa los paquetes no archivados
   const activeQueue = [...packages]
-    .filter((p) => p.status === 'pending' || p.status === 'in_progress')
+    .filter((p) => !p.archivedInHistory && (p.status === 'pending' || p.status === 'in_progress'))
     .sort((a, b) => (a.routeOrder || 0) - (b.routeOrder || 0));
 
   const currentPkg = activeQueue[0] || null;
@@ -73,15 +75,18 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
 
   const activateShiftIfWaiting = async () => {
     const s = await ensureShiftExists(getTodayShiftId());
-    if (!s.startedAt) {
+    if (!s.startedAt || s.status === 'closed') {
       await db.shifts.update(s.id, {
-        startedAt: Date.now(),
+        status: 'active',
+        startedAt: s.startedAt || Date.now(),
+        endTime: null,
         isPaused: false,
         lastPauseStartedAt: null
       });
     } else if (s.isPaused) {
       const pauseDelta = s.lastPauseStartedAt ? Date.now() - s.lastPauseStartedAt : 0;
       await db.shifts.update(s.id, {
+        status: 'active',
         isPaused: false,
         lastPauseStartedAt: null,
         accumulatedPausedMs: (s.accumulatedPausedMs || 0) + pauseDelta
@@ -124,18 +129,47 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
     }
   };
 
+  const captureCurrentGPSOrFallback = (
+    pkg: DeliveryPackage
+  ): Promise<{ lat: number; lng: number } | null> => {
+    return new Promise((resolve) => {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        resolve(pkg.coordinates || null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          resolve({
+            lat: Number(pos.coords.latitude.toFixed(6)),
+            lng: Number(pos.coords.longitude.toFixed(6))
+          });
+        },
+        () => {
+          resolve(pkg.coordinates || null);
+        },
+        { enableHighAccuracy: true, timeout: 1800, maximumAge: 30000 }
+      );
+    });
+  };
+
   const handleMarkDelivered = async () => {
     if (!currentPkg || currentPkg.id === undefined) return;
+    const pkgId = currentPkg.id;
     const candidateNext = nextPkg || null;
+    const finalWaitSecs = currentPkg.arrivedAtPointAt
+      ? Math.max(0, Math.floor((Date.now() - currentPkg.arrivedAtPointAt) / 1000))
+      : 0;
 
     await activateShiftIfWaiting();
     playCashRegisterSuccess();
 
-    await db.packages.update(currentPkg.id, {
+    // Guardar en IndexedDB en 0ms de forma instantánea con coordenadas estimadas iniciales
+    await db.packages.update(pkgId, {
       status: 'delivered',
       rate: currentPkg.rate || defaultRate,
       deliveredAt: Date.now(),
-      arrivedAtPointAt: undefined
+      waitTimeSeconds: finalWaitSecs,
+      deliveryCoordinates: currentPkg.coordinates || null
     });
 
     if (candidateNext) {
@@ -143,24 +177,36 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
     } else {
       setNextClientAlertPkg(null);
     }
+
+    // Refinar en segundo plano con la coordenada GPS exacta del celular en el momento de la entrega
+    captureCurrentGPSOrFallback(currentPkg).then(async (exactCoords) => {
+      if (exactCoords) {
+        await db.packages.update(pkgId, { deliveryCoordinates: exactCoords });
+      }
+      syncToSupabase(true);
+    });
   };
 
   const handleMarkIssue = async () => {
     if (!currentPkg || currentPkg.id === undefined) return;
     const candidateNext = nextPkg || null;
+    const finalWaitSecs = currentPkg.arrivedAtPointAt
+      ? Math.max(0, Math.floor((Date.now() - currentPkg.arrivedAtPointAt) / 1000))
+      : 0;
 
     await activateShiftIfWaiting();
     await db.packages.update(currentPkg.id, {
       status: 'issue',
       issueNote: issueReason,
       deliveredAt: Date.now(),
-      arrivedAtPointAt: undefined
+      waitTimeSeconds: finalWaitSecs
     });
     setShowIssueModal(false);
 
     if (candidateNext) {
       setNextClientAlertPkg(candidateNext);
     }
+    syncToSupabase(true);
   };
 
   if (!currentPkg) {
@@ -298,7 +344,6 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
             </p>
           </div>
 
-          {/* 4 dígitos gigantes para encontrar el paquete en el bolso/parrilla en 2 segundos */}
           <div className="shrink-0 px-3.5 py-2 rounded-2xl bg-amber-500 text-slate-950 text-center shadow-lg shadow-amber-500/25 border-2 border-amber-300">
             <span className="block text-[10px] font-black uppercase tracking-wider leading-none">
               BUSCAR GUÍA
@@ -332,7 +377,7 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           </a>
         </div>
 
-        {/* Contacto Rápido Cliente Actual (WhatsApp + Llamada) */}
+        {/* Contacto Rápido Cliente Actual */}
         <div className="mt-2.5 grid grid-cols-2 gap-2.5">
           <a
             href={currentWhatsAppUrl}
@@ -353,7 +398,7 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           </a>
         </div>
 
-        {/* Cronómetro de Espera en Puerta (Alerta Roja > 3 min) */}
+        {/* Cronómetro de Espera en Puerta */}
         <div
           className={`mt-3 p-3 rounded-2xl border transition-all ${
             !currentPkg.arrivedAtPointAt

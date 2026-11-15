@@ -157,9 +157,14 @@ export function parseIMileLabelBlock(rawText: string): {
 
   // 3. Buscar dirección (Carrera / Calle / Tv / Dg / Cq)
   const addressMatch = text.match(
-    /\b((?:carrera|cra\.?|cr\.?|kr\.?|calle|cll\.?|cl\.?|transversal|tv\.?|diagonal|dg\.?|circular|cq\.?)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:sur)?\s*(?:#|nro|no|numero|\s)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:-|\s)\s*\d{1,3}(?:[^\n,;.]{0,25}))/i
+    /\b((?:carrera|cra\.?|cr\.?|kr\.?|calle|cll\.?|cl\.?|transversal|tv\.?|diagonal|dg\.?|circular|cq\.?)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:sur)?\s*(?:#|nro|no|numero|\s)\s*\d{1,3}\s*[a-zA-Z]{0,3}\s*(?:-|\s)\s*\d{1,3}(?:[^\n,;/]{0,25}))/i
   );
-  const rawAddress = addressMatch ? addressMatch[1].trim() : undefined;
+  const rawAddress = addressMatch
+    ? addressMatch[1]
+        .replace(/\b(MEDELL[IÍ]N|ANTIOQUIA|COLOMBIA)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : undefined;
 
   // 4. El resto limpio suele ser el nombre del cliente
   let leftover = text;
@@ -167,12 +172,20 @@ export function parseIMileLabelBlock(rawText: string): {
   if (phoneMatch) leftover = leftover.replace(phoneMatch[0], '');
   if (addressMatch) leftover = leftover.replace(addressMatch[0], '');
   leftover = leftover
-    .replace(/\b(TO:?|DESTINATARIO:?|NOMBRE:?|TEL:?|DIRECCION:?|MEDELLIN|ANTIOQUIA|COLOMBIA)\b/gi, '')
-    .replace(/[,;|\-\n]+/g, ' ')
+    .replace(/\b(TO:?|DESTINATARIO:?|NOMBRE:?|TEL:?|DIRECCION:?|MEDELL[IÍ]N|ANTIOQUIA|COLOMBIA)\b/gi, '')
+    .replace(/[,;|/\-\n]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  const recipientName = leftover.length >= 3 ? leftover : undefined;
+  const toTitleCase = (str: string) =>
+    str
+      .toLowerCase()
+      .split(' ')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+
+  const recipientName = leftover.length >= 3 ? toTitleCase(leftover) : undefined;
 
   return {
     trackingNumber,
