@@ -307,13 +307,13 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         {/* Interactive ConfirmDialogModal */}
         <AnimatePresence>
           {activeConfirm && (
-            <div className="fixed inset-0 z-[130] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+            <div className="fixed inset-0 z-[130] bg-slate-950/80 backdrop-blur-md flex items-end sm:items-center justify-center p-2 sm:p-4 touch-scroll-y">
               <motion.div
-                initial={{ opacity: 0, scale: 0.92, y: 12 }}
+                initial={{ opacity: 0, scale: 0.95, y: 12 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.92, y: 12 }}
+                exit={{ opacity: 0, scale: 0.95, y: 12 }}
                 transition={{ duration: 0.2 }}
-                className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden p-5 space-y-3.5 max-h-[92vh] overflow-y-auto"
+                className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl p-4 sm:p-5 space-y-3.5 max-h-[88dvh] touch-scroll-y my-auto"
               >
                 <div className="flex items-start gap-3.5">
                   <div

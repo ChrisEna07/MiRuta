@@ -567,9 +567,9 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
 
       {/* Modal para reportar Novedad / Devuelto */}
       {showIssueModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 p-2 sm:p-4 touch-scroll-y">
           <div
-            className={`w-full max-w-md rounded-3xl border p-4 space-y-3 ${
+            className={`w-full max-w-md rounded-3xl border p-4 pb-8 space-y-3 max-h-[88dvh] touch-scroll-y my-auto ${
               highContrastSun
                 ? 'bg-white border-slate-300 text-slate-950'
                 : 'bg-slate-900 border-slate-800 text-slate-100'

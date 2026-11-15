@@ -607,9 +607,9 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
 
       {/* MODAL DE CIERRE FORMAL DE JORNADA ("🏁 Terminar Jornada") */}
       {showCloseShiftModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4 touch-scroll-y">
           <div
-            className={`w-full max-w-md rounded-3xl border p-5 shadow-2xl space-y-4 ${
+            className={`w-full max-w-md rounded-3xl border p-4 sm:p-5 pb-8 shadow-2xl space-y-4 max-h-[90dvh] touch-scroll-y my-auto ${
               highContrastSun
                 ? 'bg-white border-slate-300 text-slate-950'
                 : 'bg-slate-900 border-slate-800 text-slate-50'

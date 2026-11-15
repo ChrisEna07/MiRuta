@@ -432,9 +432,9 @@ export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = (
 
       {/* MODAL DE EXPEDIENTE / DETALLE PROBATORIO DEL PAQUETE (PackageAuditModal) */}
       {selectedPkg && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4 touch-scroll-y">
           <div
-            className={`w-full max-w-lg rounded-t-3xl sm:rounded-3xl border p-4 shadow-2xl max-h-[92vh] overflow-y-auto space-y-3.5 ${
+            className={`w-full max-w-lg rounded-t-3xl sm:rounded-3xl border p-4 pb-8 shadow-2xl max-h-[90dvh] touch-scroll-y space-y-3.5 ${
               highContrastSun
                 ? 'bg-white border-slate-300 text-slate-950'
                 : 'bg-slate-900 border-slate-800 text-slate-50'

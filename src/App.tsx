@@ -62,7 +62,7 @@ export function App() {
   return (
     <FeedbackProvider>
       <div
-        className={`min-h-screen pb-28 transition-colors overflow-x-hidden ${
+        className={`min-h-[100dvh] w-full pb-36 transition-colors touch-pan-y ${
           highContrastSun
             ? 'bg-slate-100 text-slate-950'
             : 'bg-slate-950 text-slate-50'
