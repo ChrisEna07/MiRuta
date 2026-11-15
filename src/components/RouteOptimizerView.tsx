@@ -25,6 +25,7 @@ import {
 import { db, type DeliveryPackage, getMaxMotorcycleCapacity } from '../db/database';
 import { detectSameBlockClusters } from '../utils/addressParser';
 import { openWazeNavigation, buildNavigationLinks } from '../utils/mediaAndFeedback';
+import { PackageSizeBadge } from './PackageSizeBadge';
 import {
   sortPackagesOfflineSnake,
   solveTSPNearestNeighbor2Opt,
@@ -406,6 +407,7 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
               <span className="text-xs font-mono font-black text-amber-300">
                 #{nextPendingPkg.lastFourDigits}
               </span>
+              <PackageSizeBadge size={nextPendingPkg.packageSize} variant="pill" />
             </div>
             <p className="text-sm font-black truncate mt-1">
               {nextPendingPkg.rawAddress}
@@ -481,16 +483,14 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
                           T{pkg.batchNumber}
                         </span>
                       )}
+                      <div className="mt-1.5">
+                        <PackageSizeBadge size={pkg.packageSize} variant="pill" />
+                      </div>
                     </div>
 
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-sm font-black truncate">{pkg.rawAddress}</span>
-                        {pkg.packageSize === 'large' && (
-                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/40">
-                            ⚠️ Bulto Grande
-                          </span>
-                        )}
                         {pkg.isIsolatedOutlier && (
                           <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-400/50">
                             ⚠️ Aislado

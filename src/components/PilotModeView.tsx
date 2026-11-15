@@ -41,6 +41,7 @@ import {
 } from '../utils/mediaAndFeedback';
 import { detectSameBlockClusters } from '../utils/addressParser';
 import { syncToSupabase } from '../services/supabaseSync';
+import { PackageSizeBadge } from './PackageSizeBadge';
 import { useToast } from './ui/FeedbackSystem';
 
 interface PilotModeViewProps {
@@ -755,13 +756,17 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
             </p>
           </div>
 
-          <div className="shrink-0 px-3.5 py-2 rounded-2xl bg-amber-500 text-slate-950 text-center shadow-lg shadow-amber-500/25 border-2 border-amber-300">
-            <span className="block text-[10px] font-black uppercase tracking-wider leading-none">
-              BUSCAR GUÍA
-            </span>
-            <span className="block text-2xl sm:text-3xl font-black font-mono tracking-tight leading-none mt-1">
-              #{currentPkg.lastFourDigits}
-            </span>
+          <div className="shrink-0 flex flex-col items-center gap-1.5">
+            <div className="px-3.5 py-2 rounded-2xl bg-amber-500 text-slate-950 text-center shadow-lg shadow-amber-500/25 border-2 border-amber-300">
+              <span className="block text-[10px] font-black uppercase tracking-wider leading-none">
+                BUSCAR GUÍA
+              </span>
+              <span className="block text-2xl sm:text-3xl font-black font-mono tracking-tight leading-none mt-1">
+                #{currentPkg.lastFourDigits}
+              </span>
+            </div>
+            {/* Ubicación y Tamaño del Paquete en la Moto (v8.7) */}
+            <PackageSizeBadge size={currentPkg.packageSize} variant="expanded" />
           </div>
         </div>
 
@@ -953,9 +958,12 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
                 {nextPkg.recipientName}
               </span>
             </div>
-            <span className="text-lg font-black font-mono text-amber-400 shrink-0">
-              #{nextPkg.lastFourDigits}
-            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <PackageSizeBadge size={nextPkg.packageSize} variant="pill" />
+              <span className="text-lg font-black font-mono text-amber-400">
+                #{nextPkg.lastFourDigits}
+              </span>
+            </div>
           </div>
 
           <p className="text-xs font-bold mt-1">{nextPkg.rawAddress}</p>
