@@ -35,7 +35,7 @@ import {
 } from '../db/database';
 import { parseMedellinAddress, parseIMileLabelBlock } from '../utils/addressParser';
 import { estimateMedellinCoordinatesFromAddress } from '../utils/routeOptimizer';
-import { formatCOP } from '../utils/mediaAndFeedback';
+import { formatCOP, playCashRegisterSuccess } from '../utils/mediaAndFeedback';
 import { playScannerLaserBeep } from '../utils/scannerSound';
 import {
   sanitizeTrackingInput,
@@ -103,13 +103,41 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   );
   const [lastRawOcrText, setLastRawOcrText] = useState<string>('');
   const [lastRotationDeg, setLastRotationDeg] = useState<number>(90);
+  const [hasScannedAttempt, setHasScannedAttempt] = useState<boolean>(false);
 
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'ready'>('idle');
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const lastDecodedBarcodeRef = useRef<string>('');
+  const modalScrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const formSectionRef = useRef<HTMLFormElement | null>(null);
   const scannerContainerId = 'miruta-barcode-reader-region';
+
+  const scrollToVerificationForm = () => {
+    setTimeout(() => {
+      if (formSectionRef.current) {
+        formSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      if (modalScrollContainerRef.current) {
+        modalScrollContainerRef.current.scrollTo({ top: 250, behavior: 'smooth' });
+      }
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 250, behavior: 'smooth' });
+      }
+    }, 100);
+  };
+
+  const scrollToTopCamera = () => {
+    setTimeout(() => {
+      if (modalScrollContainerRef.current) {
+        modalScrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }, 60);
+  };
 
   const todayShiftId = getTodayShiftId();
   const todayPackages =
@@ -146,6 +174,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setEditingPackageId(null);
       setIsAnalyzingLabel(false);
       setFrozenFramePreview('');
+      setHasScannedAttempt(false);
       lastDecodedBarcodeRef.current = '';
     } else {
       refreshLearningStats();
@@ -224,6 +253,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               ) {
                 lastDecodedBarcodeRef.current = clean;
                 playScannerLaserBeep();
+                setHasScannedAttempt(true);
                 setTrackingNumber(clean);
                 setAutoFilledFields((prev) => ({ ...prev, trackingNumber: true }));
 
@@ -242,14 +272,17 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                     recipientPhone: true,
                     rawAddress: true,
                   });
+                  await stopCameraScanner();
+                  scrollToVerificationForm();
                   toast.success(
                     `🔫 BEEP! Guía #${extractLastFourDigits(clean)} reconocida en 0ms`,
                     `${recalled.recipientName} • ${recalled.rawAddress}`
                   );
                 } else {
+                  scrollToVerificationForm();
                   toast.info(
                     `🔫 BEEP! Guía #${extractLastFourDigits(clean)} leída`,
-                    'Pulsa "📸 CAPTURAR ETIQUETA COMPLETA" para leer Nombre, Celular y Dirección.'
+                    'Pulsa "📸 CAPTURAR ETIQUETA COMPLETA" o verifica la dirección abajo.'
                   );
                 }
               }
@@ -334,9 +367,11 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       }
 
       setAutoFilledFields((prev) => ({ ...prev, ...newFlags }));
+      setHasScannedAttempt(true);
 
       if (result.fieldsDetectedCount >= 1) {
         playScannerLaserBeep();
+        scrollToVerificationForm();
       }
 
       if (result.fieldsDetectedCount >= 2) {
@@ -602,9 +637,11 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         await db.packages.add(newPkg);
         toast.success(
           `✅ Paquete #${newPkg.lastFourDigits} registrado en ruta`,
-          `${newPkg.rawAddress} • Aprendido en Memoria de Ruta`
+          `${newPkg.rawAddress} • Cámara lista para el siguiente paquete`
         );
       }
+
+      playCashRegisterSuccess();
 
       // Aprendizaje por retroalimentación en el Motor Adaptativo de Etiquetas iMile
       await learnFromConfirmedPackage({
@@ -629,16 +666,20 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setCapturedLabelThumb('');
       setAutoFilledFields({});
       setSmartEngineBadge('');
+      setHasScannedAttempt(false);
       lastDecodedBarcodeRef.current = '';
 
       setTimeout(() => {
         setSaveState('idle');
         if (!keepOpenForNext) {
           onClose();
-        } else if (activeScannerTab === 'live' && !cameraActive) {
+        } else {
+          // Subir al visor de cámara y abrir escáner en vivo de inmediato sin tocar nada más
+          setActiveScannerTab('live');
+          scrollToTopCamera();
           startCameraScanner();
         }
-      }, 900);
+      }, 450);
     } catch {
       setSaveState('idle');
       toast.error('⚠️ No se pudo guardar el paquete en IndexedDB');
@@ -650,25 +691,26 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4 touch-scroll-y">
       <div
-        className={`w-full max-w-lg rounded-t-3xl sm:rounded-3xl border p-4 pb-8 shadow-2xl max-h-[92dvh] touch-scroll-y ${
+        ref={modalScrollContainerRef}
+        className={`w-full max-w-lg rounded-t-3xl sm:rounded-3xl border p-4 pb-10 shadow-2xl max-h-[92dvh] touch-scroll-y ${
           highContrastSun
             ? 'bg-white border-slate-300 text-slate-950'
             : 'bg-slate-900 border-slate-800 text-slate-50'
         }`}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between pb-2.5 border-b border-slate-800/60 gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-start justify-between pb-2.5 border-b border-slate-800/60 gap-2">
+          <div className="flex items-start gap-2 min-w-0 flex-1">
             <div className="p-2 rounded-xl bg-gradient-to-br from-blue-600 to-emerald-600 text-white shrink-0">
               <PackagePlus className="w-5 h-5" />
             </div>
-            <div className="min-w-0">
-              <h2 className="text-base font-black leading-tight truncate">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm sm:text-base font-black whitespace-normal break-words leading-snug">
                 {editingPackageId
                   ? 'Actualizar Guía en Ruta'
-                  : '📸 Escáner Láser + IA iMile v6.0'}
+                  : '📸 Escáner Láser + IA iMile v6.1'}
               </h2>
-              <p className="text-[10px] font-bold text-emerald-400 truncate">
+              <p className="text-[10px] font-bold text-emerald-400 whitespace-normal break-words leading-snug mt-0.5">
                 {learningBadge}
               </p>
             </div>
@@ -898,7 +940,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         {/* Banner + Miniatura de Verificación Visual cuando la Cámara Inteligente autocompleta */}
         {(hasAnyAutoFilled || capturedLabelThumb) && (
           <div className="mt-3 p-2.5 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
               {capturedLabelThumb && (
                 <div
                   onClick={() => setZoomThumbOpen(true)}
@@ -914,11 +956,11 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                   </div>
                 </div>
               )}
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/25 text-emerald-300 border border-emerald-400/40">
                   ✨ Autocompletado por Cámara Inteligente
                 </span>
-                <p className="text-[11px] text-slate-300 font-semibold mt-0.5 truncate">
+                <p className="text-[11px] text-slate-300 font-semibold mt-0.5 whitespace-normal break-words leading-snug">
                   {smartEngineBadge || 'Datos extraídos de la etiqueta iMile'}
                 </p>
                 {capturedLabelThumb && (
@@ -986,8 +1028,13 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           />
         </div>
 
-        {/* Manual / Assisted Form with Auto-Fill Emerald Highlighting */}
-        <form onSubmit={(e) => handleSavePackage(e, true)} className="mt-3 space-y-3">
+        {/* Formulario Vertical Optimizado (1 Columna Compacta space-y-3) con Auto-Scroll y Validación Ámbar */}
+        <form
+          ref={formSectionRef}
+          onSubmit={(e) => handleSavePackage(e, true)}
+          className="mt-3 space-y-3"
+        >
+          {/* 1. Guía iMile + Últimos 4 Dígitos */}
           <div className="grid grid-cols-3 gap-2 items-center">
             <div className="col-span-2">
               <div className="flex items-center justify-between mb-1">
@@ -1033,13 +1080,13 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           {/* Aviso de Guía Duplicada en tiempo real */}
           {duplicateTodayPkg && (
             <div className="p-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/50 flex items-center justify-between gap-2">
-              <div className="flex items-start gap-2 min-w-0">
+              <div className="flex items-start gap-2 min-w-0 flex-1">
                 <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div className="text-[11px] leading-tight">
+                <div className="text-[11px] leading-snug whitespace-normal break-words">
                   <p className="font-black text-amber-300">
                     ⚠️ Esta guía (#{duplicateTodayPkg.lastFourDigits}) ya está en tu ruta de hoy
                   </p>
-                  <p className="text-amber-200/80 truncate mt-0.5">
+                  <p className="text-amber-200/80 mt-0.5">
                     {duplicateTodayPkg.rawAddress} ({duplicateTodayPkg.recipientName})
                   </p>
                 </div>
@@ -1055,26 +1102,34 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             </div>
           )}
 
+          {/* 2. Dirección de Entrega con Validación Visual Ámbar de Campos Críticos */}
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
                 <MapPin className="w-3.5 h-3.5 text-emerald-400" />
                 DIRECCIÓN DE ENTREGA (MEDELLÍN) *
               </label>
-              {autoFilledFields.rawAddress && (
+              {autoFilledFields.rawAddress && isAddressComplete ? (
                 <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                   ✨ Autocompletado
                 </span>
-              )}
+              ) : hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete) ? (
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-amber-500/25 text-amber-300 border border-amber-400/60 animate-pulse">
+                  ⚠️ Revisa esta dirección antes de guardar
+                </span>
+              ) : null}
             </div>
+
             <input
               type="text"
               required
               value={rawAddress}
               onChange={(e) => setRawAddress(e.target.value)}
-              placeholder="Ej: Carrera 43c #100 52 Apto 301"
-              className={`w-full rounded-xl px-3 py-2.5 text-sm font-bold border focus:outline-none focus:ring-2 transition-colors ${
-                autoFilledFields.rawAddress
+              placeholder="Ej: Carrera 43C # 100 - 52"
+              className={`w-full rounded-xl px-3 py-2.5 text-sm font-bold border focus:outline-none focus:ring-2 transition-all ${
+                hasScannedAttempt && (!rawAddress.trim() || !isAddressComplete)
+                  ? 'border-amber-400 ring-2 ring-amber-400/30 focus:ring-amber-400'
+                  : autoFilledFields.rawAddress && isAddressComplete
                   ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
                   : 'border-slate-700 focus:ring-blue-500'
               } ${
@@ -1083,18 +1138,26 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                   : 'bg-slate-950 text-white'
               }`}
             />
+
+            {hasScannedAttempt && !rawAddress.trim() && (
+              <div className="mt-1.5 p-2 rounded-xl bg-amber-500/15 border border-amber-400/50 text-[11px] font-black text-amber-300 flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>⚠️ Revisa esta dirección antes de guardar</span>
+              </div>
+            )}
+
             {rawAddress.trim() && (
               <div
                 className={`mt-1.5 p-2.5 rounded-xl border text-[11px] font-bold space-y-1.5 ${
                   isAddressComplete
                     ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
-                    : 'bg-amber-950/40 border-amber-500/40 text-amber-300'
+                    : 'bg-amber-950/40 border-amber-400/60 text-amber-300'
                 }`}
               >
                 {isAddressComplete ? (
                   <>
                     <div className="flex items-center justify-between flex-wrap gap-1">
-                      <span>
+                      <span className="whitespace-normal break-words leading-snug">
                         ✅ Normalizado: <strong>{medellinIntel.normalizedAddress}</strong>
                       </span>
                       <span className="font-mono bg-emerald-500/20 px-1.5 py-0.5 rounded text-[10px]">
@@ -1102,7 +1165,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                       </span>
                     </div>
                     <div className="flex items-center justify-between flex-wrap gap-1.5 text-[10px] text-slate-300 pt-0.5 border-t border-emerald-500/20">
-                      <span>
+                      <span className="whitespace-normal break-words leading-snug">
                         📍 Sector inferido: <strong className="text-sky-300">{medellinIntel.inferredNeighborhood}</strong> ({medellinIntel.comunaName})
                       </span>
                       {(rawAddress !== medellinIntel.normalizedAddress ||
@@ -1120,7 +1183,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                       )}
                     </div>
                     <p
-                      className={`text-[10px] font-semibold ${
+                      className={`text-[10px] font-semibold whitespace-normal break-words leading-snug ${
                         medellinIntel.isSteepHillOrAlley ? 'text-amber-300' : 'text-emerald-300/90'
                       }`}
                     >
@@ -1128,90 +1191,97 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                     </p>
                   </>
                 ) : (
-                  <span>
-                    ⚠️ Agrega el número de calle/carrera para enrutar mejor (ej. CR 43C # 100 - 52)
+                  <span className="flex items-center gap-1.5 whitespace-normal break-words leading-snug">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>⚠️ Revisa esta dirección antes de guardar (ej. Carrera 43C # 100 - 52)</span>
                   </span>
                 )}
               </div>
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
-                  <User className="w-3.5 h-3.5 text-blue-400" />
-                  DESTINATARIO (BLOQUE TO)
-                </label>
-                {autoFilledFields.recipientName && (
-                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                    ✨ Auto
-                  </span>
-                )}
-              </div>
-              <input
-                type="text"
-                value={recipientName}
-                onChange={(e) => setRecipientName(e.target.value)}
-                placeholder="Alba Lucia Lopera Castrillon"
-                className={`w-full rounded-xl px-3 py-2 text-sm font-medium border focus:outline-none focus:ring-2 transition-colors ${
-                  autoFilledFields.recipientName
-                    ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
-                    : 'border-slate-700 focus:ring-blue-500'
-                } ${
-                  highContrastSun
-                    ? 'bg-white text-slate-950'
-                    : 'bg-slate-950 text-white'
-                }`}
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
-                  <Phone className="w-3.5 h-3.5 text-emerald-400" />
-                  CELULAR WHATSAPP (573...)
-                </label>
-                {autoFilledFields.recipientPhone && (
-                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                    ✨ Auto
-                  </span>
-                )}
-              </div>
-              <input
-                type="tel"
-                inputMode="tel"
-                value={recipientPhone}
-                onChange={(e) => {
-                  const res = validateAndFormatColombianPhone(e.target.value);
-                  setRecipientPhone(res.formatted);
-                }}
-                placeholder="322 587 3762"
-                className={`w-full rounded-xl px-3 py-2 text-sm font-mono font-bold border focus:outline-none focus:ring-2 transition-colors ${
-                  recipientPhone && !phoneValidation.isValid
-                    ? 'border-amber-500 focus:ring-amber-500'
-                    : (recipientPhone && phoneValidation.isValid) ||
-                      autoFilledFields.recipientPhone
-                    ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
-                    : 'border-slate-700 focus:ring-blue-500'
-                } ${
-                  highContrastSun
-                    ? 'bg-white text-slate-950'
-                    : 'bg-slate-950 text-white'
-                }`}
-              />
-              {recipientPhone && phoneValidation.helperText && (
-                <p
-                  className={`text-[10px] font-bold mt-1 ${
-                    phoneValidation.isValid ? 'text-emerald-400' : 'text-amber-400'
-                  }`}
-                >
-                  {phoneValidation.helperText}
-                </p>
+          {/* 3. Destinatario (1 Columna Vertical) */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                <User className="w-3.5 h-3.5 text-blue-400" />
+                DESTINATARIO (BLOQUE TO)
+              </label>
+              {autoFilledFields.recipientName && (
+                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  ✨ Auto
+                </span>
               )}
             </div>
+            <input
+              type="text"
+              value={recipientName}
+              onChange={(e) => setRecipientName(e.target.value)}
+              placeholder="Alba Lucia Lopera Castrillon"
+              className={`w-full rounded-xl px-3 py-2 text-sm font-medium border focus:outline-none focus:ring-2 transition-colors ${
+                autoFilledFields.recipientName
+                  ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
+                  : 'border-slate-700 focus:ring-blue-500'
+              } ${
+                highContrastSun
+                  ? 'bg-white text-slate-950'
+                  : 'bg-slate-950 text-white'
+              }`}
+            />
           </div>
 
+          {/* 4. Celular WhatsApp (1 Columna Vertical con Validación Ámbar) */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1">
+                <Phone className="w-3.5 h-3.5 text-emerald-400" />
+                CELULAR WHATSAPP (573...)
+              </label>
+              {autoFilledFields.recipientPhone && phoneValidation.isValid ? (
+                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  ✨ Auto
+                </span>
+              ) : hasScannedAttempt && (!recipientPhone.trim() || !phoneValidation.isValid) ? (
+                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-400/50">
+                  ⚠️ Verifica celular
+                </span>
+              ) : null}
+            </div>
+            <input
+              type="tel"
+              inputMode="tel"
+              value={recipientPhone}
+              onChange={(e) => {
+                const res = validateAndFormatColombianPhone(e.target.value);
+                setRecipientPhone(res.formatted);
+              }}
+              placeholder="322 587 3762"
+              className={`w-full rounded-xl px-3 py-2 text-sm font-mono font-bold border focus:outline-none focus:ring-2 transition-all ${
+                (recipientPhone && !phoneValidation.isValid) ||
+                (hasScannedAttempt && !recipientPhone.trim())
+                  ? 'border-amber-400 ring-2 ring-amber-400/30 focus:ring-amber-400'
+                  : (recipientPhone && phoneValidation.isValid) ||
+                    autoFilledFields.recipientPhone
+                  ? 'border-emerald-500 bg-emerald-950/20 focus:ring-emerald-500'
+                  : 'border-slate-700 focus:ring-blue-500'
+              } ${
+                highContrastSun
+                  ? 'bg-white text-slate-950'
+                  : 'bg-slate-950 text-white'
+              }`}
+            />
+            {recipientPhone && phoneValidation.helperText && (
+              <p
+                className={`text-[10px] font-bold mt-1 ${
+                  phoneValidation.isValid ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              >
+                {phoneValidation.helperText}
+              </p>
+            )}
+          </div>
+
+          {/* 5. Barrio / Sector Asignado */}
           <div>
             <label className="block text-[11px] font-bold text-slate-400 mb-1">
               BARRIO / SECTOR ASIGNADO
@@ -1220,7 +1290,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               type="text"
               value={neighborhood}
               onChange={(e) => setNeighborhood(e.target.value)}
-              placeholder="Ej: El Poblado / Laureles / Belén / Castilla"
+              placeholder="Ej: Santa Cruz / El Poblado / Laureles / Belén"
               className={`w-full rounded-xl px-3 py-2 text-xs font-bold border ${
                 highContrastSun
                   ? 'bg-white border-slate-300 text-slate-950'
@@ -1229,36 +1299,39 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             />
           </div>
 
-          <div className="pt-2 flex gap-2">
+          {/* Botón Único Principal Gigante e Imponente (1-Touch Flow) + Enlace Sutil Secundario */}
+          <div className="pt-2 space-y-2.5">
             <button
               type="submit"
               disabled={saveState !== 'idle'}
-              className="flex-1 py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-75 text-white font-black text-sm shadow-lg shadow-emerald-600/30 active:scale-[0.99] flex items-center justify-center gap-2 transition-all"
+              className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 disabled:opacity-75 text-slate-950 font-black text-base shadow-xl shadow-emerald-600/30 border-2 border-emerald-300 active:scale-[0.98] flex items-center justify-center gap-2 transition-all"
             >
               {saveState === 'saving' ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>GUARDANDO...</span>
+                  <Loader2 className="w-5 h-5 animate-spin stroke-[2.5]" />
+                  <span>GUARDANDO PAQUETE...</span>
                 </>
               ) : saveState === 'ready' ? (
                 <>
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>✅ ¡LISTO!</span>
+                  <CheckCircle2 className="w-5 h-5 stroke-[2.5]" />
+                  <span>✅ ¡GUARDADO! ABRIENDO CÁMARA...</span>
                 </>
               ) : editingPackageId ? (
-                <span>💾 ACTUALIZAR PAQUETE EXISTENTE</span>
+                <span>💾 ACTUALIZAR Y ESCANEAR OTRO</span>
               ) : (
                 <span>💾 GUARDAR Y ESCANEAR OTRO</span>
               )}
             </button>
-            <button
-              type="button"
-              disabled={saveState !== 'idle'}
-              onClick={(e) => handleSavePackage(e, false)}
-              className="py-3.5 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 disabled:opacity-75 text-white font-bold text-xs active:scale-95 transition-all"
-            >
-              Guardar y Salir
-            </button>
+
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={onClose}
+                className="py-1.5 px-4 text-xs font-bold text-slate-400 hover:text-white transition-colors"
+              >
+                ✕ Volver a ruta sin guardar
+              </button>
+            </div>
           </div>
         </form>
       </div>

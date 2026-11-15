@@ -128,17 +128,17 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
       >
         <div className="max-w-lg mx-auto px-4 py-2.5">
           {/* Top Row: Brand MR + Live Network & Cloud Sync Status + Sun/Dark Mode */}
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-start sm:items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 via-indigo-600 to-emerald-600 flex items-center justify-center text-white font-black text-sm shadow-md shadow-blue-600/30 shrink-0 border border-white/15">
                 MR
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <h1 className="font-black text-base tracking-tight leading-none">
+                  <h1 className="font-black text-base tracking-tight leading-snug">
                     MiRuta
                   </h1>
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-blue-600/20 text-blue-400 border border-blue-500/30 whitespace-nowrap">
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-blue-600/20 text-blue-400 border border-blue-500/30 whitespace-normal break-words leading-snug">
                     by Christian Romero
                   </span>
                 </div>
@@ -150,14 +150,14 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
                       setTempRateInput(formatLiveCOPInput(String(currentRate)));
                       setShowRateModal(true);
                     }}
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition-colors ${
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition-colors whitespace-normal break-words leading-snug ${
                       highContrastSun
                         ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                         : 'bg-slate-800/90 border-slate-700 text-emerald-300 hover:bg-slate-800'
                     }`}
                   >
                     <span>Tarifa {formatCOP(currentRate)}</span>
-                    <Pencil className="w-2.5 h-2.5 text-amber-400" />
+                    <Pencil className="w-2.5 h-2.5 text-amber-400 shrink-0" />
                   </button>
                 </div>
               </div>
@@ -166,7 +166,7 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
             <div className="flex items-center gap-1.5 shrink-0">
               {/* Live Cloud Sync & Offline Status Pill */}
               <div
-                className={`px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1.5 border transition-colors ${
+                className={`px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1.5 border transition-colors whitespace-normal break-words leading-snug ${
                   cloudSync.state === 'syncing'
                     ? 'bg-indigo-950/90 border-indigo-500/50 text-indigo-300'
                     : !isOnline || cloudSync.state === 'offline_pending'
@@ -217,8 +217,12 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
           </div>
 
           {/* Dynamic Greeting */}
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <p className={`text-xs font-bold truncate ${highContrastSun ? 'text-blue-800' : 'text-blue-300'}`}>
+          <div className="mt-2 flex items-start justify-between gap-2">
+            <p
+              className={`min-w-0 flex-1 text-xs font-bold whitespace-normal break-words leading-snug ${
+                highContrastSun ? 'text-blue-800' : 'text-blue-300'
+              }`}
+            >
               {greeting}
             </p>
             <button
@@ -246,14 +250,18 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
               }`}
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="flex-1">
-                  <div className="flex items-center gap-1.5 mb-0.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
                     <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-400">
+                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-400 whitespace-normal break-words leading-snug">
                       {verse.reference} • {verse.theme}
                     </span>
                   </div>
-                  <p className={`text-xs italic leading-snug ${highContrastSun ? 'text-slate-800 font-medium' : 'text-slate-200'}`}>
+                  <p
+                    className={`text-xs italic whitespace-normal break-words leading-snug ${
+                      highContrastSun ? 'text-slate-800 font-medium' : 'text-slate-200'
+                    }`}
+                  >
                     “{verse.text}”
                   </p>
                 </div>
