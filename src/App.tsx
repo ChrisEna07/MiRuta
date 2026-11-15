@@ -249,6 +249,10 @@ export function App() {
           isOpen={scannerOpen}
           onClose={() => setScannerOpen(false)}
           onOpenTestLab={() => setTestLabOpen(true)}
+          onNavigateToRoute={() => {
+            setScannerOpen(false);
+            setActiveTab('route');
+          }}
           highContrastSun={highContrastSun}
         />
 

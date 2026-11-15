@@ -33,6 +33,7 @@ import {
   getTodayShiftId,
   ensureShiftExists,
   getDefaultPackageRate,
+  getMaxMotorcycleCapacity,
   type DeliveryPackage,
 } from '../db/database';
 import { parseMedellinAddress, parseIMileLabelBlock } from '../utils/addressParser';
@@ -61,6 +62,7 @@ interface ScannerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenTestLab?: () => void;
+  onNavigateToRoute?: () => void;
   highContrastSun: boolean;
 }
 
@@ -75,6 +77,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   isOpen,
   onClose,
   onOpenTestLab,
+  onNavigateToRoute,
   highContrastSun,
 }) => {
   const toast = useToast();
@@ -87,6 +90,33 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [neighborhood, setNeighborhood] = useState<string>('Medellín');
   const [smartBlockText, setSmartBlockText] = useState<string>('');
   const [editingPackageId, setEditingPackageId] = useState<number | null>(null);
+
+  // Contador de Sesión y Alerta de Capacidad de Moto v9.8
+  const [sessionCount, setSessionCount] = useState<number>(0);
+  const [showCapacityAlert, setShowCapacityAlert] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSessionCount(0);
+      setShowCapacityAlert(false);
+    }
+  }, [isOpen]);
+
+  const getSessionBadgeClasses = (count: number) => {
+    if (count >= 20) {
+      return highContrastSun
+        ? 'bg-rose-600 text-white border-2 border-rose-800 animate-pulse font-black'
+        : 'bg-rose-500/25 text-rose-300 border border-rose-500/60 animate-pulse font-black shadow-[0_0_10px_rgba(244,63,94,0.4)]';
+    }
+    if (count >= 15) {
+      return highContrastSun
+        ? 'bg-amber-400 text-slate-950 border-2 border-amber-600 font-black'
+        : 'bg-amber-500/25 text-amber-300 border border-amber-500/60 font-black';
+    }
+    return highContrastSun
+      ? 'bg-emerald-600 text-white border-2 border-emerald-800 font-black'
+      : 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/60 font-black';
+  };
 
   // Estados de Cámara Inteligente v4.5
   const [cameraActive, setCameraActive] = useState<boolean>(false);
@@ -764,6 +794,20 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setHasScannedAttempt(false);
       lastDecodedBarcodeRef.current = '';
 
+      // Incremento del Contador de Sesión en Vivo y Alerta de Capacidad (v9.8)
+      const nextSessionCount = sessionCount + 1;
+      setSessionCount(nextSessionCount);
+
+      // Disparador a los 20 Paquetes: Interrupción controlada de capacidad de moto
+      if (nextSessionCount === 20) {
+        stopCameraScanner();
+        setShowCapacityAlert(true);
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([100, 50, 100, 50, 150]);
+        }
+        return;
+      }
+
       if (!keepOpenForNext) {
         onClose();
       } else {
@@ -798,11 +842,21 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               <PackagePlus className="w-5 h-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm sm:text-base font-black whitespace-normal break-words leading-snug">
-                {editingPackageId
-                  ? 'Actualizar Guía en Ruta'
-                  : '📸 Escáner Láser + IA iMile v6.1'}
-              </h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm sm:text-base font-black whitespace-normal break-words leading-snug">
+                  {editingPackageId
+                    ? 'Actualizar Guía en Ruta'
+                    : '📸 Escáner Láser + IA'}
+                </h2>
+                {/* Badge Contador de Ráfaga en Vivo v9.8 */}
+                <div
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] sm:text-xs border flex items-center gap-1 shadow-sm transition-all ${getSessionBadgeClasses(
+                    sessionCount
+                  )}`}
+                >
+                  <span>📦 Llevas: {sessionCount} paquetes</span>
+                </div>
+              </div>
               <p className="text-[10px] font-bold text-emerald-400 whitespace-normal break-words leading-snug mt-0.5">
                 {learningBadge}
               </p>
@@ -1597,6 +1651,59 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               alt="Etiqueta capturada"
               className="w-full max-h-[82vh] object-contain rounded-2xl border border-slate-700"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Modal / Alerta de Decisión de Capacidad de Moto (v9.8) */}
+      {showCapacityAlert && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div
+            className={`w-full max-w-sm rounded-3xl border-2 p-5 shadow-2xl text-center space-y-4 ${
+              highContrastSun
+                ? 'bg-white border-amber-500 text-slate-950'
+                : 'bg-slate-900 border-amber-500/80 text-white shadow-amber-500/20'
+            }`}
+          >
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center mx-auto text-amber-400 text-3xl">
+              ⚠️
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-lg font-black text-amber-400 flex items-center justify-center gap-1.5">
+                <span>⚠️ Capacidad de Moto Alcanzada</span>
+              </h3>
+              <p className="text-xs sm:text-sm font-semibold text-slate-300 leading-snug">
+                Has escaneado <strong className="text-amber-300 font-black">{sessionCount} paquetes</strong>. ¿Deseas arrancar a repartir esta tanda, o seguirás escaneando para dejar una segunda tanda lista en bodega?
+              </p>
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCapacityAlert(false);
+                  onClose();
+                  onNavigateToRoute?.();
+                }}
+                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/30 active:scale-95 transition-transform cursor-pointer border border-emerald-300"
+              >
+                <span>🏁 Terminar y Enrutar</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCapacityAlert(false);
+                  setActiveScannerTab('live');
+                  scrollToTopCamera();
+                  startCameraScanner();
+                }}
+                className="w-full py-3 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-xs flex items-center justify-center gap-2 border border-slate-700 active:scale-95 transition-transform cursor-pointer"
+              >
+                <span>🔄 Seguir Escaneando</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
