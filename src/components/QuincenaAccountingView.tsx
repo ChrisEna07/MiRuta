@@ -179,11 +179,16 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
     let totalMs = 0;
     for (const s of filteredShifts) {
       if (s.startedAt) {
-        const elapsed = Math.min(
-          12 * 3600000,
-          Math.max(1800000, Date.now() - s.startedAt - (s.accumulatedPausedMs || 0))
-        );
-        totalMs += elapsed;
+        if (s.effectiveDurationMs && s.effectiveDurationMs > 0) {
+          totalMs += s.effectiveDurationMs;
+        } else {
+          const shiftEnd = s.endTime || (s.id === getTodayShiftId() ? Date.now() : s.startedAt + 8 * 3600000);
+          const elapsed = Math.max(
+            0,
+            shiftEnd - s.startedAt - (s.accumulatedPausedMs || 0)
+          );
+          totalMs += Math.min(12 * 3600000, Math.max(1800000, elapsed));
+        }
       }
     }
     const minEstimatedHours = deliveredPackages.length / 6.5;

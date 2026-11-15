@@ -1146,6 +1146,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           />
         </div>
 
+        {/* Claridad Arquitectónica: Motor Local Autónomo iMile */}
+        <div className="px-3 py-1.5 rounded-xl bg-slate-900/60 border border-slate-800 text-[10px] text-slate-400 flex items-center justify-between gap-1.5 flex-wrap">
+          <span className="flex items-center gap-1 font-semibold">
+            ⚡ Motor Local Híbrido iMile: Barcode Nativo + OCR Local + Smart Paste + Nomenclatura Medellín
+          </span>
+          <span className="font-mono text-emerald-400 font-bold">100% Offline • 0ms Latencia</span>
+        </div>
+
         {/* Formulario Vertical Optimizado (1 Columna Compacta space-y-3) con Auto-Scroll y Validación Ámbar */}
         <form
           ref={formSectionRef}

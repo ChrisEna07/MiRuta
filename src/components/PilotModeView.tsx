@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Navigation,
   Map,
@@ -11,20 +12,31 @@ import {
   BellRing,
   PackageCheck,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Play,
+  Pause,
+  Flag,
+  RotateCcw,
+  Fuel,
+  Coffee,
+  Package as PkgIcon,
+  X
 } from 'lucide-react';
 import {
   db,
   type DeliveryPackage,
   getDefaultPackageRate,
   ensureShiftExists,
-  getTodayShiftId
+  getTodayShiftId,
+  closeActiveShift,
+  type PendingPackagesAction
 } from '../db/database';
 import {
   playCashRegisterSuccess,
   compressProofPhotoToBase64,
   buildWhatsAppPreNoticeUrl,
   buildNavigationLinks,
+  openWazeNavigation,
   formatCOP
 } from '../utils/mediaAndFeedback';
 import { detectSameBlockClusters } from '../utils/addressParser';
@@ -48,6 +60,15 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
   const [issueReason, setIssueReason] = useState<string>('Cliente no contesta tras 5 min');
   const [uploadingPhoto, setUploadingPhoto] = useState<boolean>(false);
   const [nextClientAlertPkg, setNextClientAlertPkg] = useState<DeliveryPackage | null>(null);
+
+  // Control de Jornada v8.6 (Inicio, Pausas Inteligentes y Cierre)
+  const todayShiftId = getTodayShiftId();
+  const shift = useLiveQuery(() => db.shifts.get(todayShiftId), [todayShiftId]);
+  const [showPauseMenu, setShowPauseMenu] = useState<boolean>(false);
+  const [showCloseShiftModal, setShowCloseShiftModal] = useState<boolean>(false);
+  const [closingFuelInput, setClosingFuelInput] = useState<string>('12.000');
+  const [closingPendingAction, setClosingPendingAction] = useState<PendingPackagesAction>('move_to_tomorrow');
+  const [isClosingShift, setIsClosingShift] = useState<boolean>(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -74,6 +95,104 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       ? Math.max(0, Math.floor((now - currentPkg.arrivedAtPointAt) / 1000))
       : 0;
   const isOverThreeMinutes = doorWaitSeconds >= 180;
+
+  const formatStopwatch = (ms: number) => {
+    const totalSecs = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(totalSecs / 3600);
+    const m = Math.floor((totalSecs % 3600) / 60);
+    const s = totalSecs % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const isShiftActive = shift?.status === 'active' && !shift?.isPaused && !!shift?.startedAt;
+  const isShiftPaused = !!shift?.isPaused && !!shift?.startedAt && shift?.status !== 'closed';
+  const isShiftNotStarted = !shift?.startedAt || shift?.status === 'closed';
+
+  const activeDurationMs = useMemo(() => {
+    if (!shift?.startedAt) return 0;
+    if (shift.status === 'closed') return shift.effectiveDurationMs || 0;
+    const baseEnd = isShiftPaused && shift.lastPauseStartedAt ? shift.lastPauseStartedAt : now;
+    return Math.max(0, baseEnd - shift.startedAt - (shift.accumulatedPausedMs || 0));
+  }, [shift, now, isShiftPaused]);
+
+  const currentPauseMs = useMemo(() => {
+    if (!isShiftPaused || !shift?.lastPauseStartedAt) return 0;
+    return Math.max(0, now - shift.lastPauseStartedAt);
+  }, [isShiftPaused, shift?.lastPauseStartedAt, now]);
+
+  const totalPausedMs = (shift?.accumulatedPausedMs || 0) + (isShiftPaused ? currentPauseMs : 0);
+
+  const deliveredPkgs = packages.filter((p) => p.status === 'delivered');
+  const deliveredCount = deliveredPkgs.length;
+  const grossEarnedCOP = deliveredPkgs.reduce((acc, p) => acc + (p.rate || defaultRate), 0);
+
+  const activeHours = activeDurationMs / 3600000;
+  const pacePerHour = activeHours >= 0.05
+    ? (deliveredCount / activeHours).toFixed(1)
+    : (deliveredCount > 0 ? String(deliveredCount) : '0.0');
+
+  const handleStartShift = async () => {
+    const s = await ensureShiftExists(todayShiftId);
+    await db.shifts.update(s.id, {
+      status: 'active',
+      startedAt: Date.now(),
+      endTime: null,
+      isPaused: false,
+      lastPauseStartedAt: null,
+      accumulatedPausedMs: 0,
+      pauseReason: undefined
+    });
+    playCashRegisterSuccess();
+    toast.success('🚀 ¡Jornada Iniciada!', 'Cronómetro activo y contador de paq/h en marcha.');
+  };
+
+  const handlePauseShift = async (reason: string) => {
+    const s = await ensureShiftExists(todayShiftId);
+    await db.shifts.update(s.id, {
+      status: 'paused',
+      isPaused: true,
+      lastPauseStartedAt: Date.now(),
+      pauseReason: reason
+    });
+    setShowPauseMenu(false);
+    toast.warning(`⏸️ Jornada en Pausa (${reason})`, 'Tiempo activo congelado para no distorsionar tu ritmo de entrega.');
+  };
+
+  const handleResumeShift = async () => {
+    const s = await ensureShiftExists(todayShiftId);
+    const pauseDelta = s.lastPauseStartedAt ? Date.now() - s.lastPauseStartedAt : 0;
+    await db.shifts.update(s.id, {
+      status: 'active',
+      isPaused: false,
+      lastPauseStartedAt: null,
+      accumulatedPausedMs: (s.accumulatedPausedMs || 0) + pauseDelta,
+      pauseReason: undefined
+    });
+    playCashRegisterSuccess();
+    toast.success('▶️ ¡Ruta Reanudada!', 'Cronómetro de entregas reactivado.');
+  };
+
+  const handleConfirmCloseShift = async () => {
+    setIsClosingShift(true);
+    try {
+      const fuelNum = parseInt(closingFuelInput.replace(/\D/g, ''), 10) || 12000;
+      await closeActiveShift({
+        shiftId: todayShiftId,
+        fuelExpense: fuelNum,
+        pendingAction: closingPendingAction,
+        effectiveDurationMs: activeDurationMs
+      });
+      setShowCloseShiftModal(false);
+      toast.success(
+        '🏁 Jornada Cerrada con Éxito',
+        `Entregaste ${deliveredCount} paquetes hoy. Backup local generado automáticamente.`
+      );
+    } catch {
+      toast.error('Error al cerrar la jornada');
+    } finally {
+      setIsClosingShift(false);
+    }
+  };
 
   const activateShiftIfWaiting = async () => {
     const s = await ensureShiftExists(getTodayShiftId());
@@ -228,13 +347,281 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
     }, 0);
   };
 
+  const renderShiftControlCard = () => {
+    if (isShiftNotStarted) {
+      return (
+        <div className="p-3.5 rounded-3xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white shadow-xl border-2 border-emerald-400">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <span className="text-[10px] font-black uppercase tracking-wider bg-black/25 px-2 py-0.5 rounded-full">
+                🏍️ CONTROL DE JORNADA
+              </span>
+              <h3 className="text-sm font-black mt-1">
+                {shift?.status === 'closed' ? '🏁 Jornada de Hoy Finalizada' : 'Jornada no iniciada'}
+              </h3>
+              <p className="text-xs text-emerald-100">
+                Inicia el cronómetro para registrar tu tiempo real y paq/hora.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleStartShift}
+              className="py-3 px-4 rounded-2xl bg-white hover:bg-emerald-50 text-emerald-950 font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-lg active:scale-95 transition-all shrink-0 cursor-pointer"
+            >
+              <Play className="w-5 h-5 fill-emerald-600 text-emerald-600 shrink-0" />
+              <span>▶ EMPEZAR JORNADA</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (isShiftPaused) {
+      return (
+        <div className="p-3.5 rounded-3xl bg-amber-950/90 border-2 border-amber-500 text-amber-100 shadow-xl space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-2xl shrink-0">⏸️</span>
+              <div className="min-w-0">
+                <h3 className="text-sm font-black text-amber-300 truncate">
+                  JORNADA EN PAUSA ({shift?.pauseReason || 'Pausa Operativa'})
+                </h3>
+                <p className="text-[11px] text-amber-200/80 leading-snug">
+                  Tiempo activo detenido. En pausa:{' '}
+                  <strong className="font-mono text-white text-xs">
+                    {formatStopwatch(currentPauseMs)}
+                  </strong>
+                </p>
+              </div>
+            </div>
+
+            <span className="text-[10px] font-mono font-bold bg-amber-500/20 border border-amber-500/40 text-amber-300 px-2 py-0.5 rounded-lg shrink-0">
+              Pausas: {Math.round(totalPausedMs / 60000)} min
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleResumeShift}
+            className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all cursor-pointer"
+          >
+            <Play className="w-4 h-4 fill-slate-950 text-slate-950 shrink-0" />
+            <span>▶ REANUDAR RUTA</span>
+          </button>
+        </div>
+      );
+    }
+
+    // Jornada Activa
+    return (
+      <div
+        className={`p-3.5 rounded-3xl border-2 shadow-xl space-y-2.5 ${
+          highContrastSun
+            ? 'bg-white border-blue-600 text-slate-950'
+            : 'bg-slate-900 border-blue-500/70 text-slate-100'
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+            </span>
+            <span className="text-xs font-black text-emerald-400">
+              JORNADA EN CURSO
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <div className="text-right">
+              <span className="text-[9px] text-slate-400 block uppercase font-bold">Tiempo Activo</span>
+              <span className="text-base sm:text-lg font-black font-mono text-emerald-400 leading-none">
+                {formatStopwatch(activeDurationMs)}
+              </span>
+            </div>
+            <div className="text-right border-l border-slate-700 pl-2.5">
+              <span className="text-[9px] text-slate-400 block uppercase font-bold">Ritmo</span>
+              <span className="text-xs sm:text-sm font-black font-mono text-amber-400 leading-none">
+                {pacePerHour} paq/h
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Botones de Control: Pausas y Terminar */}
+        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800">
+          <button
+            type="button"
+            onClick={() => setShowPauseMenu(!showPauseMenu)}
+            className="py-2 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+          >
+            <Pause className="w-3.5 h-3.5" />
+            <span>⏸️ Pausar Jornada</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowCloseShiftModal(true)}
+            className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+          >
+            <Flag className="w-3.5 h-3.5 text-rose-400" />
+            <span>🏁 Terminar Jornada</span>
+          </button>
+        </div>
+
+        {/* Menú Rápido de Motivos de Pausa */}
+        {showPauseMenu && (
+          <div className="p-2.5 rounded-2xl bg-slate-950 border border-amber-500/40 space-y-1.5">
+            <span className="text-[10px] font-bold text-amber-400 block">
+              Selecciona motivo de pausa (congela el cronómetro para no distorsionar paq/h):
+            </span>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => handlePauseShift('Almuerzo')}
+                className="py-2 px-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-200 text-center flex flex-col items-center gap-0.5 active:scale-95 cursor-pointer"
+              >
+                <span className="text-sm">🍔</span>
+                <span>Almuerzo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePauseShift('Gasolina / Moto')}
+                className="py-2 px-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-200 text-center flex flex-col items-center gap-0.5 active:scale-95 cursor-pointer"
+              >
+                <span className="text-sm">⛽</span>
+                <span>Gasolina</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePauseShift('Espera Bodega')}
+                className="py-2 px-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-200 text-center flex flex-col items-center gap-0.5 active:scale-95 cursor-pointer"
+              >
+                <span className="text-sm">📦</span>
+                <span>Espera Bodega</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderCloseShiftModal = () => (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-3 sm:p-4 touch-scroll-y">
+      <div
+        className={`w-full max-w-md rounded-3xl border p-5 space-y-3.5 max-h-[90dvh] touch-scroll-y my-auto shadow-2xl ${
+          highContrastSun
+            ? 'bg-white border-slate-300 text-slate-950'
+            : 'bg-slate-900 border-slate-800 text-slate-100'
+        }`}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-black flex items-center gap-2 text-amber-400">
+            <Flag className="w-5 h-5" />
+            <span>🏁 Cierre y Fin de Jornada</span>
+          </h3>
+          <button
+            type="button"
+            onClick={() => setShowCloseShiftModal(false)}
+            className="p-1 rounded-lg text-slate-400 hover:text-white"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span className="text-[10px] font-bold text-slate-400">ENTREGAS HOY</span>
+            <p className="text-base font-black text-emerald-400 mt-0.5">
+              {deliveredCount} paqs (+{formatCOP(grossEarnedCOP)})
+            </p>
+          </div>
+          <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span className="text-[10px] font-bold text-slate-400">TIEMPO EFECTIVO</span>
+            <p className="text-base font-black text-white mt-0.5">
+              {formatStopwatch(activeDurationMs)}
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1 mb-1">
+            <Fuel className="w-3.5 h-3.5 text-amber-400" />
+            Gasto de Gasolina del Día ($ COP)
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={closingFuelInput}
+            onChange={(e) => setClosingFuelInput(e.target.value)}
+            placeholder="12000"
+            className="w-full rounded-xl px-3 py-2 text-sm font-mono font-bold bg-slate-950 border border-slate-700 text-white"
+          />
+        </div>
+
+        <div>
+          <label className="text-[11px] font-bold text-slate-400 block mb-1">
+            ¿Qué hacer con paquetes pendientes o no entregados?
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setClosingPendingAction('move_to_tomorrow')}
+              className={`p-2 rounded-xl text-xs font-bold border text-left cursor-pointer ${
+                closingPendingAction === 'move_to_tomorrow'
+                  ? 'bg-blue-600/30 border-blue-500 text-blue-200'
+                  : 'bg-slate-800/60 border-slate-700 text-slate-400'
+              }`}
+            >
+              <p className="font-black text-white">📦 Mover a Mañana</p>
+              <p className="text-[10px]">Pasan a la ruta de mañana</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setClosingPendingAction('mark_returned_to_warehouse')}
+              className={`p-2 rounded-xl text-xs font-bold border text-left cursor-pointer ${
+                closingPendingAction === 'mark_returned_to_warehouse'
+                  ? 'bg-rose-600/30 border-rose-500 text-rose-200'
+                  : 'bg-slate-800/60 border-slate-700 text-slate-400'
+              }`}
+            >
+              <p className="font-black text-white">🏭 Devolver Bodega</p>
+              <p className="text-[10px]">Registrar como novedad</p>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex gap-2 pt-2">
+          <button
+            type="button"
+            disabled={isClosingShift}
+            onClick={handleConfirmCloseShift}
+            className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg active:scale-95 disabled:opacity-50 cursor-pointer"
+          >
+            <Flag className="w-4 h-4" />
+            <span>{isClosingShift ? 'Cerrando...' : 'Confirmar Cierre de Jornada'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowCloseShiftModal(false)}
+            className="py-3 px-4 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs cursor-pointer"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   if (!currentPkg) {
-    const deliveredPkgs = packages.filter((p) => p.status === 'delivered');
-    const deliveredCount = deliveredPkgs.length;
     const totalEarned = deliveredPkgs.reduce((acc, p) => acc + (p.rate || defaultRate), 0);
 
     return (
-      <div className="max-w-lg mx-auto px-4 py-4">
+      <div className="max-w-lg mx-auto px-4 py-2.5 space-y-3">
+        {renderShiftControlCard()}
+
         <div
           className={`rounded-3xl border p-6 text-center shadow-xl ${
             highContrastSun
@@ -256,11 +643,13 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           <button
             type="button"
             onClick={onOpenScanner}
-            className="mt-4 w-full py-3.5 px-5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-sm shadow-lg shadow-blue-600/30"
+            className="mt-4 w-full py-3.5 px-5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-sm shadow-lg shadow-blue-600/30 cursor-pointer"
           >
             + ESCANEAR PAQUETES DE RUTA
           </button>
         </div>
+
+        {showCloseShiftModal && renderCloseShiftModal()}
       </div>
     );
   }
@@ -278,6 +667,9 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
 
   return (
     <div className="max-w-lg mx-auto px-4 py-2.5 space-y-3">
+      {/* 1. Módulo Control de Jornada (Empezar / Pausas / Terminar) */}
+      {renderShiftControlCard()}
+
       {/* Floating Banner Post-Delivery: 1-Click Pre-Notice to Next Client */}
       {nextClientAlertPkg && (
         <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white shadow-xl border-2 border-emerald-300">
@@ -373,27 +765,38 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           </div>
         </div>
 
-        {/* Lanzador Dual de Navegación: Waze + Google Maps */}
-        <div className="mt-3.5 grid grid-cols-2 gap-2.5">
-          <a
-            href={navLinks.wazeUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="py-3 px-3 rounded-2xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-md active:scale-95 transition-transform"
+        {/* Lanzador Directo de Navegación: Waze Gigante 1-Click + Maps */}
+        <div className="mt-3.5 space-y-2">
+          <button
+            type="button"
+            onClick={() => openWazeNavigation(currentPkg.rawAddress, currentPkg.coordinates)}
+            className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-sky-500 via-sky-400 to-cyan-400 hover:from-sky-400 hover:to-cyan-300 text-slate-950 font-black text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl shadow-sky-500/25 active:scale-[0.98] transition-all cursor-pointer border-2 border-sky-200"
           >
-            <Navigation className="w-4 h-4 fill-slate-950 shrink-0" />
-            <span>IR CON WAZE</span>
-          </a>
+            <Navigation className="w-5 h-5 fill-slate-950 shrink-0" />
+            <span>🧭 NAVEGAR EN WAZE (1-CLICK)</span>
+          </button>
 
-          <a
-            href={navLinks.googleMapsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="py-3 px-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md active:scale-95 transition-transform"
-          >
-            <Map className="w-4 h-4 shrink-0" />
-            <span>GOOGLE MAPS</span>
-          </a>
+          <div className="grid grid-cols-2 gap-2">
+            <a
+              href={navLinks.googleMapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5 border border-slate-700 active:scale-95 transition-all"
+            >
+              <Map className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              <span>Google Maps</span>
+            </a>
+
+            <a
+              href={navLinks.wazeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="py-2.5 px-3 rounded-xl bg-sky-950/60 hover:bg-sky-900/60 text-sky-300 font-bold text-xs flex items-center justify-center gap-1.5 border border-sky-500/40 active:scale-95 transition-all"
+            >
+              <Navigation className="w-3.5 h-3.5 fill-sky-300 shrink-0" />
+              <span>Web Waze</span>
+            </a>
+          </div>
         </div>
 
         {/* Contacto Rápido Cliente Actual */}
@@ -634,6 +1037,9 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal Cierre de Jornada v8.6 */}
+      {showCloseShiftModal && renderCloseShiftModal()}
     </div>
   );
 };

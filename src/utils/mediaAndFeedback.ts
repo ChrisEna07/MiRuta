@@ -134,7 +134,9 @@ export function buildWhatsAppPreNoticeUrl(pkg: DeliveryPackage): string {
  * Construye enlaces de navegación directa para Waze y Google Maps en Medellín.
  */
 export function buildNavigationLinks(pkg: DeliveryPackage): { wazeUrl: string; googleMapsUrl: string } {
-  const queryAddress = `${pkg.rawAddress}, Medellín, Antioquia, Colombia`;
+  const queryAddress = pkg.rawAddress.toLowerCase().includes('medellín') || pkg.rawAddress.toLowerCase().includes('medellin')
+    ? pkg.rawAddress
+    : `${pkg.rawAddress}, Medellín, Antioquia, Colombia`;
 
   if (pkg.coordinates && pkg.coordinates.lat && pkg.coordinates.lng) {
     const { lat, lng } = pkg.coordinates;
@@ -148,4 +150,44 @@ export function buildNavigationLinks(pkg: DeliveryPackage): { wazeUrl: string; g
     wazeUrl: `https://waze.com/ul?q=${encodeURIComponent(queryAddress)}&navigate=yes`,
     googleMapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(queryAddress)}`
   };
+}
+
+/**
+ * Abre la app nativa de Waze o el portal web con la ruta pre-cargada
+ * hacia la dirección normalizada de Medellín en un solo toque (deep link con fallback).
+ */
+export function openWazeNavigation(
+  address: string,
+  coords?: { lat: number; lng: number } | null
+): void {
+  if (!address && !coords) return;
+
+  const queryAddress = address.toLowerCase().includes('medellín') || address.toLowerCase().includes('medellin')
+    ? address
+    : `${address}, Medellín, Antioquia, Colombia`;
+
+  const webUrl = coords?.lat && coords?.lng
+    ? `https://waze.com/ul?ll=${coords.lat},${coords.lng}&navigate=yes`
+    : `https://waze.com/ul?q=${encodeURIComponent(queryAddress)}&navigate=yes`;
+
+  const appScheme = coords?.lat && coords?.lng
+    ? `waze://?ll=${coords.lat},${coords.lng}&navigate=yes`
+    : `waze://?q=${encodeURIComponent(queryAddress)}&navigate=yes`;
+
+  if (typeof window !== 'undefined') {
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (isMobile) {
+      try {
+        window.location.href = appScheme;
+        setTimeout(() => {
+          window.open(webUrl, '_blank');
+        }, 500);
+        return;
+      } catch {
+        window.open(webUrl, '_blank');
+        return;
+      }
+    }
+    window.open(webUrl, '_blank');
+  }
 }

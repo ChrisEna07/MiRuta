@@ -57,6 +57,7 @@ export interface WorkShift {
   isPaused: boolean;
   lastPauseStartedAt: number | null;
   accumulatedPausedMs: number;
+  pauseReason?: string;
   manualActiveMinutesOffset: number;
   effectiveDurationMs?: number;
   fuelExpense: number;

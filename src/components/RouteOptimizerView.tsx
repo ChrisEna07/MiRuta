@@ -2,6 +2,8 @@ import React, { useState, useMemo } from 'react';
 import {
   Zap,
   Compass,
+  Navigation,
+  Map,
   ArrowUp,
   ArrowDown,
   Crosshair,
@@ -22,6 +24,7 @@ import {
 } from 'lucide-react';
 import { db, type DeliveryPackage, getMaxMotorcycleCapacity } from '../db/database';
 import { detectSameBlockClusters } from '../utils/addressParser';
+import { openWazeNavigation, buildNavigationLinks } from '../utils/mediaAndFeedback';
 import {
   sortPackagesOfflineSnake,
   solveTSPNearestNeighbor2Opt,
@@ -194,6 +197,10 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
       p.recipientName.toLowerCase().includes(q)
     );
   });
+
+  const nextPendingPkg = filtered.find(
+    (p) => p.status === 'pending' || p.status === 'in_progress'
+  );
 
   return (
     <div className="max-w-lg mx-auto px-4 py-2.5 space-y-3.5">
@@ -388,6 +395,37 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
         />
       </div>
 
+      {/* Atajo Hero Parada Siguiente a Waze (1-Click) */}
+      {nextPendingPkg && (
+        <div className="p-3.5 rounded-3xl bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-700 text-white shadow-xl border-2 border-sky-300 flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-black/30 text-sky-200">
+                🎯 SIGUIENTE PARADA
+              </span>
+              <span className="text-xs font-mono font-black text-amber-300">
+                #{nextPendingPkg.lastFourDigits}
+              </span>
+            </div>
+            <p className="text-sm font-black truncate mt-1">
+              {nextPendingPkg.rawAddress}
+            </p>
+            <p className="text-xs text-sky-100 truncate">
+              {nextPendingPkg.recipientName} • {nextPendingPkg.parsedAddress?.neighborhood || 'Medellín'}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => openWazeNavigation(nextPendingPkg.rawAddress, nextPendingPkg.coordinates)}
+            className="py-2.5 px-3.5 rounded-2xl bg-white hover:bg-sky-50 text-slate-950 font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-lg active:scale-95 transition-all shrink-0 cursor-pointer"
+          >
+            <Navigation className="w-4 h-4 fill-sky-600 text-sky-600 shrink-0" />
+            <span>🧭 Navegar en Waze</span>
+          </button>
+        </div>
+      )}
+
       {/* Lista de Paquetes de la Jornada */}
       {filtered.length === 0 ? (
         <div
@@ -481,6 +519,30 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
                           Nota: {pkg.issueNote}
                         </p>
                       )}
+
+                      {/* Botón directo de navegación Waze por parada */}
+                      <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => openWazeNavigation(pkg.rawAddress, pkg.coordinates)}
+                          className="py-1 px-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] flex items-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer"
+                          title="Navegar directo con Waze"
+                        >
+                          <Navigation className="w-3.5 h-3.5 fill-slate-950 shrink-0" />
+                          <span>🧭 Navegar en Waze</span>
+                        </button>
+
+                        <a
+                          href={buildNavigationLinks(pkg).googleMapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="py-1 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] flex items-center gap-1 border border-slate-700 active:scale-95"
+                          title="Abrir en Google Maps"
+                        >
+                          <Map className="w-3 h-3 text-blue-400 shrink-0" />
+                          <span>Maps</span>
+                        </a>
+                      </div>
                     </div>
                   </div>
 
