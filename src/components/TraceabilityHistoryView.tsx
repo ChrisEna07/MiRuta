@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { db, type DeliveryPackage, getTodayShiftId } from '../db/database';
 import { compressProofPhotoToBase64, formatCOP } from '../utils/mediaAndFeedback';
+import { useToast } from './ui/FeedbackSystem';
 
 interface TraceabilityHistoryViewProps {
   highContrastSun: boolean;
@@ -31,6 +32,7 @@ type StatusFilterMode = 'all' | 'delivered' | 'issue' | 'pending';
 export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = ({
   highContrastSun
 }) => {
+  const toast = useToast();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<DateFilterMode>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilterMode>('all');
@@ -137,6 +139,7 @@ export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = (
       auditNote: auditNoteInput.trim()
     });
     setNoteSavedBanner('✅ Nota probatoria guardada en el expediente.');
+    toast.success(`📝 Nota guardada en #${selectedPkg.lastFourDigits}`, auditNoteInput.trim() || 'Expediente actualizado');
     setTimeout(() => setNoteSavedBanner(''), 3000);
   };
 
@@ -149,9 +152,10 @@ export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = (
         proofPhotoBase64: base64
       });
       setNoteSavedBanner('✅ Evidencia fotográfica actualizada en el expediente.');
+      toast.success(`📷 Evidencia fotográfica actualizada (#${selectedPkg.lastFourDigits})`);
       setTimeout(() => setNoteSavedBanner(''), 3000);
     } catch {
-      alert('No se pudo comprimir la imagen.');
+      toast.error('⚠️ No se pudo comprimir la imagen');
     }
   };
 

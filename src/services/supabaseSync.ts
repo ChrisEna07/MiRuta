@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { db, type BackupSnapshotRecord } from '../db/database';
 
@@ -5,9 +6,85 @@ const SUPABASE_URL_KEY = 'miruta_supabase_url';
 const SUPABASE_ANON_KEY = 'miruta_supabase_anon_key';
 const LAST_SYNC_TS_KEY = 'miruta_last_cloud_sync_ts';
 
-// Credenciales públicas preconfiguradas del proyecto Supabase de Christian Romero
 const DEFAULT_PUBLIC_SUPABASE_URL = 'https://qsoekxdghdklwduwleuh.supabase.co';
 const DEFAULT_PUBLIC_SUPABASE_ANON_KEY = 'sb_publishable_yCl3Jo-GwtoIBjtuqhTfcw_09FPfbPP';
+
+export type LiveCloudState = 'synced' | 'syncing' | 'offline_pending';
+
+export interface CloudStatusSnapshot {
+  state: LiveCloudState;
+  lastSyncAt: number | null;
+  detailMessage: string;
+}
+
+let currentCloudStatus: CloudStatusSnapshot = {
+  state: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline_pending' : 'synced',
+  lastSyncAt:
+    typeof window !== 'undefined' && localStorage.getItem(LAST_SYNC_TS_KEY)
+      ? Number(localStorage.getItem(LAST_SYNC_TS_KEY))
+      : Date.now(),
+  detailMessage: 'Conectado a Supabase'
+};
+
+const listeners = new Set<(status: CloudStatusSnapshot) => void>();
+
+function emitCloudStatus(partial: Partial<CloudStatusSnapshot>) {
+  currentCloudStatus = { ...currentCloudStatus, ...partial };
+  for (const listener of listeners) {
+    listener(currentCloudStatus);
+  }
+}
+
+export function useCloudSyncStatus(): CloudStatusSnapshot & { relativeTimeLabel: string } {
+  const [status, setStatus] = useState<CloudStatusSnapshot>(currentCloudStatus);
+  const [now, setNow] = useState<number>(Date.now());
+
+  useEffect(() => {
+    const handler = (next: CloudStatusSnapshot) => setStatus(next);
+    listeners.add(handler);
+
+    const onOnline = () => {
+      emitCloudStatus({ state: 'synced', detailMessage: 'Red restaurada' });
+    };
+    const onOffline = () => {
+      emitCloudStatus({
+        state: 'offline_pending',
+        detailMessage: 'Guardado en Local (Pendiente subir a nube)'
+      });
+    };
+
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    const interval = setInterval(() => setNow(Date.now()), 5000);
+
+    return () => {
+      listeners.delete(handler);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      clearInterval(interval);
+    };
+  }, []);
+
+  let relativeTimeLabel = 'Sincronizado ahora';
+  if (status.lastSyncAt) {
+    const diffSecs = Math.max(1, Math.floor((now - status.lastSyncAt) / 1000));
+    if (diffSecs < 60) {
+      relativeTimeLabel = `Sincronizado hace ${diffSecs} seg`;
+    } else if (diffSecs < 3600) {
+      relativeTimeLabel = `Sincronizado hace ${Math.floor(diffSecs / 60)} min`;
+    } else {
+      relativeTimeLabel = `Sincronizado a las ${new Date(status.lastSyncAt).toLocaleTimeString('es-CO', {
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`;
+    }
+  }
+
+  return {
+    ...status,
+    relativeTimeLabel
+  };
+}
 
 export interface SupabaseConfigInfo {
   url: string;
@@ -75,12 +152,20 @@ export interface SyncResult {
   syncedSnapshots: number;
 }
 
-/**
- * Sube un Snapshot específico a la tabla `backup_snapshots` en Supabase.
- */
 export async function pushSnapshotToSupabase(snapshot: BackupSnapshotRecord): Promise<boolean> {
   const client = getClient();
-  if (!client || (typeof navigator !== 'undefined' && !navigator.onLine)) return false;
+  if (!client || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    emitCloudStatus({
+      state: 'offline_pending',
+      detailMessage: 'Guardado en Local (Pendiente subir a nube)'
+    });
+    return false;
+  }
+
+  emitCloudStatus({
+    state: 'syncing',
+    detailMessage: 'Subiendo Snapshot a Supabase...'
+  });
 
   try {
     let parsedPayload: unknown = {};
@@ -104,15 +189,28 @@ export async function pushSnapshotToSupabase(snapshot: BackupSnapshotRecord): Pr
       ],
       { onConflict: 'timestamp' }
     );
+
+    const nowTs = Date.now();
+    if (!error && typeof window !== 'undefined') {
+      localStorage.setItem(LAST_SYNC_TS_KEY, String(nowTs));
+    }
+
+    emitCloudStatus({
+      state: error ? 'offline_pending' : 'synced',
+      lastSyncAt: error ? currentCloudStatus.lastSyncAt : nowTs,
+      detailMessage: error ? 'Guardado en Local' : 'Sincronizado con Supabase'
+    });
+
     return !error;
   } catch {
+    emitCloudStatus({
+      state: 'offline_pending',
+      detailMessage: 'Guardado en Local (Pendiente subir a nube)'
+    });
     return false;
   }
 }
 
-/**
- * Sincroniza en segundo plano los datos de IndexedDB (Dexie.js) hacia Supabase (`qsoekxdghdklwduwleuh`).
- */
 export async function syncToSupabase(silent = true): Promise<SyncResult> {
   const client = getClient();
   if (!client) {
@@ -126,14 +224,23 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
   }
 
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    emitCloudStatus({
+      state: 'offline_pending',
+      detailMessage: 'Guardado en Local (Pendiente subir a nube)'
+    });
     return {
       ok: false,
-      message: 'Sin conexión a internet. Tus datos están seguros en IndexedDB local.',
+      message: '⚡ Sin red móvil: Guardado en bóveda local IndexedDB.',
       syncedPackages: 0,
       syncedShifts: 0,
       syncedSnapshots: 0
     };
   }
+
+  emitCloudStatus({
+    state: 'syncing',
+    detailMessage: 'Subiendo cambios a Supabase...'
+  });
 
   try {
     const allPackages = (await db.packages.toArray()).filter((p) => !p.isTestData);
@@ -142,7 +249,6 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
     const allSettlements = await db.settlements.toArray();
     const allSnapshots = await db.backupSnapshots.toArray();
 
-    // 1. Upsert Shifts
     if (allShifts.length > 0) {
       const shiftRows = allShifts.map((s) => ({
         id: s.id,
@@ -168,7 +274,6 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       if (shiftErr && !silent) throw shiftErr;
     }
 
-    // 2. Upsert Packages
     if (allPackages.length > 0) {
       const pkgRows = allPackages.map((p) => ({
         local_id: p.id,
@@ -201,7 +306,6 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       if (pkgErr && !silent) throw pkgErr;
     }
 
-    // 3. Upsert Deductions
     if (allDeductions.length > 0) {
       const dedRows = allDeductions.map((d) => ({
         local_id: d.id,
@@ -218,7 +322,6 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       await client.from('deductions').upsert(dedRows, { onConflict: 'local_id' });
     }
 
-    // 4. Upsert Settlements
     if (allSettlements.length > 0) {
       const setRows = allSettlements.map((st) => ({
         period_key: st.periodKey,
@@ -238,7 +341,6 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       await client.from('settlements').upsert(setRows, { onConflict: 'period_key' });
     }
 
-    // 5. Upsert Backup Snapshots (últimos 15 snapshots para rapidez)
     const recentSnapshots = allSnapshots.slice(-15);
     for (const snap of recentSnapshots) {
       await pushSnapshotToSupabase(snap);
@@ -249,6 +351,12 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       localStorage.setItem(LAST_SYNC_TS_KEY, String(nowTs));
     }
 
+    emitCloudStatus({
+      state: 'synced',
+      lastSyncAt: nowTs,
+      detailMessage: 'Sincronizado con Supabase'
+    });
+
     return {
       ok: true,
       message: `✅ Sincronizado con Supabase (${allPackages.length} paq., ${allShifts.length} jornadas, ${recentSnapshots.length} backups).`,
@@ -257,12 +365,16 @@ export async function syncToSupabase(silent = true): Promise<SyncResult> {
       syncedSnapshots: recentSnapshots.length
     };
   } catch (err) {
+    emitCloudStatus({
+      state: 'offline_pending',
+      detailMessage: 'Guardado en Local (Pendiente subir a nube)'
+    });
     return {
       ok: false,
       message:
         err instanceof Error
-          ? `Aviso Supabase: ${err.message} (Ejecuta supabase_schema.sql en el SQL Editor si es tu primera vez).`
-          : 'No se pudo sincronizar con Supabase. Tus datos siguen 100% seguros en IndexedDB local.',
+          ? `Guardado en Local (Aviso Cloud: ${err.message})`
+          : 'Guardado en bóveda local IndexedDB (Pendiente sincronizar nube).',
       syncedPackages: 0,
       syncedShifts: 0,
       syncedSnapshots: 0

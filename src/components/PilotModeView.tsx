@@ -29,6 +29,7 @@ import {
 } from '../utils/mediaAndFeedback';
 import { detectSameBlockClusters } from '../utils/addressParser';
 import { syncToSupabase } from '../services/supabaseSync';
+import { useToast } from './ui/FeedbackSystem';
 
 interface PilotModeViewProps {
   packages: DeliveryPackage[];
@@ -41,6 +42,7 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
   highContrastSun,
   onOpenScanner
 }) => {
+  const toast = useToast();
   const [now, setNow] = useState<number>(Date.now());
   const [showIssueModal, setShowIssueModal] = useState<boolean>(false);
   const [issueReason, setIssueReason] = useState<string>('Cliente no contesta tras 5 min');
@@ -122,8 +124,12 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       await db.packages.update(currentPkg.id, {
         proofPhotoBase64: compressedBase64
       });
+      toast.success(
+        `📸 Evidencia guardada (#${currentPkg.lastFourDigits})`,
+        'Comprimida a <80KB en tu bóveda local.'
+      );
     } catch {
-      alert('No se pudo comprimir la foto de respaldo.');
+      toast.error('⚠️ No se pudo comprimir la foto de respaldo');
     } finally {
       setUploadingPhoto(false);
     }
@@ -172,6 +178,11 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       deliveryCoordinates: currentPkg.coordinates || null
     });
 
+    toast.success(
+      `✅ Paquete #${currentPkg.lastFourDigits} entregado (+${formatCOP(currentPkg.rate || defaultRate)})`,
+      currentPkg.rawAddress
+    );
+
     if (candidateNext) {
       setNextClientAlertPkg(candidateNext);
     } else {
@@ -202,6 +213,10 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       waitTimeSeconds: finalWaitSecs
     });
     setShowIssueModal(false);
+    toast.warning(
+      `⚠️ Novedad registrada en #${currentPkg.lastFourDigits}`,
+      issueReason
+    );
 
     if (candidateNext) {
       setNextClientAlertPkg(candidateNext);

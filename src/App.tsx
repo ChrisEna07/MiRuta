@@ -20,6 +20,7 @@ import { QuincenaAccountingView } from './components/QuincenaAccountingView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { ScannerModal } from './components/ScannerModal';
 import { ScannerTestLabModal } from './components/ScannerTestLabModal';
+import { FeedbackProvider } from './components/ui/FeedbackSystem';
 
 type ActiveTab = 'pilot' | 'route' | 'history' | 'quincena' | 'settings';
 
@@ -59,13 +60,14 @@ export function App() {
   ).length;
 
   return (
-    <div
-      className={`min-h-screen pb-28 transition-colors overflow-x-hidden ${
-        highContrastSun
-          ? 'bg-slate-100 text-slate-950'
-          : 'bg-slate-950 text-slate-50'
-      }`}
-    >
+    <FeedbackProvider>
+      <div
+        className={`min-h-screen pb-28 transition-colors overflow-x-hidden ${
+          highContrastSun
+            ? 'bg-slate-100 text-slate-950'
+            : 'bg-slate-950 text-slate-50'
+        }`}
+      >
       {/* 1. Header Dinámico MiRuta by Christian Romero */}
       <DynamicHeader
         highContrastSun={highContrastSun}
@@ -260,6 +262,7 @@ export function App() {
         </div>
       </nav>
     </div>
+    </FeedbackProvider>
   );
 }
 

@@ -27,7 +27,9 @@ import {
   closeActiveShift
 } from '../db/database';
 import { formatCOP } from '../utils/mediaAndFeedback';
+import { formatLiveCOPInput, parseLiveCOPInput } from '../utils/formatters';
 import { syncToSupabase } from '../services/supabaseSync';
+import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface ProfitabilityMeterProps {
   packages: DeliveryPackage[];
@@ -40,13 +42,15 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
   shift,
   highContrastSun
 }) => {
+  const toast = useToast();
+  const { confirm } = useConfirm();
   const [collapsed, setCollapsed] = useState<boolean>(false);
   const [now, setNow] = useState<number>(Date.now());
   const [fuelInput, setFuelInput] = useState<string>('');
 
   // Estado del Modal de Cierre de Jornada ("🏁 Terminar Jornada")
   const [showCloseShiftModal, setShowCloseShiftModal] = useState<boolean>(false);
-  const [closingFuelInput, setClosingFuelInput] = useState<string>('12000');
+  const [closingFuelInput, setClosingFuelInput] = useState<string>('12.000');
   const [pendingAction, setPendingAction] = useState<PendingPackagesAction>('move_to_tomorrow');
   const [isClosing, setIsClosing] = useState<boolean>(false);
   const [closedSuccessBanner, setClosedSuccessBanner] = useState<string>('');
@@ -58,8 +62,8 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
 
   useEffect(() => {
     if (shift) {
-      setFuelInput(String(shift.fuelExpense ?? 12000));
-      setClosingFuelInput(String(shift.fuelExpense ?? 12000));
+      setFuelInput(formatLiveCOPInput(String(shift.fuelExpense ?? 12000)));
+      setClosingFuelInput(formatLiveCOPInput(String(shift.fuelExpense ?? 12000)));
     }
   }, [shift?.fuelExpense, shift?.id]);
 
@@ -237,6 +241,15 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
   };
 
   const handleResetTimer = async () => {
+    const accepted = await confirm({
+      title: '¿Reiniciar el cronómetro de ruta?',
+      description: 'Se pondrá el contador de tiempo de hoy nuevamente en 00:00:00 (tus paquetes entregados se conservan).',
+      confirmLabel: '🔄 Reiniciar Cronómetro',
+      cancelLabel: 'Cancelar',
+      variant: 'warning',
+    });
+    if (!accepted) return;
+
     const s = await ensureShiftExists(shift?.id || getTodayShiftId());
     await db.shifts.update(s.id, {
       status: 'paused',
@@ -248,11 +261,13 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
       manualActiveMinutesOffset: 0,
       effectiveDurationMs: 0
     });
+    toast.info('⏱️ Cronómetro de jornada reiniciado a 00:00:00');
   };
 
   const handleFuelChange = async (val: string) => {
-    setFuelInput(val);
-    const num = parseInt(val.replace(/\D/g, ''), 10) || 0;
+    const formatted = formatLiveCOPInput(val);
+    setFuelInput(formatted);
+    const num = parseLiveCOPInput(formatted);
     const s = await ensureShiftExists(shift?.id || getTodayShiftId());
     await db.shifts.update(s.id, { fuelExpense: num });
   };
@@ -260,7 +275,7 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
   const handleConfirmCloseShift = async () => {
     setIsClosing(true);
     try {
-      const finalFuel = parseInt(closingFuelInput.replace(/\D/g, ''), 10) || 0;
+      const finalFuel = parseLiveCOPInput(closingFuelInput);
       const summary = await closeActiveShift({
         shiftId: shift?.id || getTodayShiftId(),
         fuelExpense: finalFuel,
@@ -273,6 +288,10 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
         `🏁 Jornada cerrada con éxito: ${summary.deliveredCount} entregados (${formatCOP(
           summary.grossCOP
         )} Bruto / ${formatCOP(summary.netCOP)} Neto). Paquetes archivados en Trazabilidad.`
+      );
+      toast.success(
+        `🏁 Jornada cerrada (${summary.deliveredCount} entregados)`,
+        `Libre hoy: ${formatCOP(summary.netCOP)} • Respaldo automático guardado.`
       );
       setTimeout(() => setClosedSuccessBanner(''), 6000);
 
@@ -431,16 +450,16 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
                   <div className="mt-1 flex items-center gap-1.5">
                     <span className="text-xs font-bold text-slate-400">$</span>
                     <input
-                      type="number"
+                      type="text"
                       inputMode="numeric"
                       value={fuelInput}
                       onChange={(e) => handleFuelChange(e.target.value)}
-                      className={`w-full rounded-lg px-2 py-1 text-sm font-black border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                      className={`w-full rounded-lg px-2 py-1 text-sm font-black font-mono border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                         highContrastSun
                           ? 'bg-white border-slate-300 text-slate-950'
                           : 'bg-slate-900 border-slate-700 text-white'
                       }`}
-                      placeholder="12000"
+                      placeholder="12.000"
                     />
                   </div>
                 </div>
@@ -477,7 +496,7 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setClosingFuelInput(String(shift?.fuelExpense ?? 12000));
+                    setClosingFuelInput(formatLiveCOPInput(String(shift?.fuelExpense ?? 12000)));
                     setShowCloseShiftModal(true);
                   }}
                   className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-700 hover:from-indigo-500 hover:to-blue-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md active:scale-[0.99] transition-transform"
@@ -593,13 +612,18 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
               <label className="text-[11px] font-bold text-slate-400 block mb-1">
                 CONFIRMAR GASTO DE GASOLINA DE HOY ($ COP)
               </label>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={closingFuelInput}
-                onChange={(e) => setClosingFuelInput(e.target.value)}
-                className="w-full rounded-xl px-3.5 py-2.5 text-base font-black font-mono bg-slate-950 border border-slate-700 text-white"
-              />
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-black text-amber-400">
+                  $
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={closingFuelInput}
+                  onChange={(e) => setClosingFuelInput(formatLiveCOPInput(e.target.value))}
+                  className="w-full rounded-xl pl-8 pr-3.5 py-2.5 text-base font-black font-mono bg-slate-950 border border-slate-700 text-white"
+                />
+              </div>
               <div className="mt-1.5 flex items-center justify-between text-xs font-bold px-1">
                 <span className="text-slate-400">
                   Producido Bruto: <strong className="text-white">{formatCOP(grossToday)}</strong>
@@ -608,7 +632,7 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
                   Libre Neto Hoy:{' '}
                   <strong>
                     {formatCOP(
-                      grossToday - (parseInt(closingFuelInput.replace(/\D/g, ''), 10) || 0)
+                      grossToday - parseLiveCOPInput(closingFuelInput)
                     )}
                   </strong>
                 </span>

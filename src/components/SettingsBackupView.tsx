@@ -18,7 +18,9 @@ import {
   RotateCcw,
   BookmarkPlus,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Loader2,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   db,
@@ -29,17 +31,20 @@ import {
   restoreSessionFromSnapshot,
   downloadSnapshotAsJSONFile,
   saveSnapshotToDateFolderWithDirectoryPicker,
-  type BackupSnapshotRecord
+  type BackupSnapshotRecord,
 } from '../db/database';
 import { formatCOP } from '../utils/mediaAndFeedback';
+import { formatLiveCOPInput, parseLiveCOPInput } from '../utils/formatters';
 import { seedMedellinDemoBatch, clearStressTestPackages } from '../utils/demoSeeder';
 import {
   getSupabaseConfig,
   saveSupabaseCredentials,
   resetToDefaultSupabaseCredentials,
   syncToSupabase,
-  pushSnapshotToSupabase
+  pushSnapshotToSupabase,
+  useCloudSyncStatus,
 } from '../services/supabaseSync';
+import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface SettingsBackupViewProps {
   highContrastSun: boolean;
@@ -48,15 +53,22 @@ interface SettingsBackupViewProps {
 
 export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   highContrastSun,
-  onOpenTestLab
+  onOpenTestLab,
 }) => {
+  const toast = useToast();
+  const { confirm } = useConfirm();
+  const cloudSync = useCloudSyncStatus();
+
   const [copied, setCopied] = useState<boolean>(false);
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [rateInput, setRateInput] = useState<string>(() => String(getDefaultPackageRate()));
+  const [rateInput, setRateInput] = useState<string>(() =>
+    formatLiveCOPInput(String(getDefaultPackageRate()))
+  );
 
   // Estado para crear Punto de Restauración manual
   const [customSessionName, setCustomSessionName] = useState<string>('');
-  const [isCreatingCheckpoint, setIsCreatingCheckpoint] = useState<boolean>(false);
+  const [checkpointBtnState, setCheckpointBtnState] = useState<'idle' | 'loading' | 'ready'>('idle');
+  const [syncBtnState, setSyncBtnState] = useState<'idle' | 'loading' | 'ready'>('idle');
+  const [restoringSnapId, setRestoringSnapId] = useState<number | null>(null);
   const [expandedFolderDates, setExpandedFolderDates] = useState<Record<string, boolean>>({});
 
   // Estado Nube Supabase Preconfigurada (qsoekxdghdklwduwleuh)
@@ -65,8 +77,6 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   const [supaKey, setSupaKey] = useState<string>(initialSupa.anonKey);
   const [projectRef, setProjectRef] = useState<string>(initialSupa.projectRef);
   const [isConfiguredSupa, setIsConfiguredSupa] = useState<boolean>(initialSupa.isConfigured);
-  const [lastSyncAt, setLastSyncAt] = useState<number | null>(initialSupa.lastSyncAt);
-  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [showAdvancedCloud, setShowAdvancedCloud] = useState<boolean>(false);
 
   // Consultar todos los Snapshots guardados en la bóveda protegida `backupSnapshots`
@@ -85,100 +95,187 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   }, [allSnapshots]);
 
   useEffect(() => {
-    const syncRate = () => setRateInput(String(getDefaultPackageRate()));
+    const syncRate = () => setRateInput(formatLiveCOPInput(String(getDefaultPackageRate())));
     window.addEventListener('miruta-rate-updated', syncRate);
     return () => window.removeEventListener('miruta-rate-updated', syncRate);
   }, []);
 
   const handleSaveRate = async (recalculateCurrentShift: boolean) => {
-    const parsed = parseInt(rateInput.replace(/\D/g, ''), 10) || 2200;
+    const parsed = parseLiveCOPInput(rateInput);
+    if (parsed <= 0) {
+      toast.error('⚠️ Ingresa una tarifa válida mayor a $0 COP');
+      return;
+    }
+
+    if (parsed < 500 || parsed > 50000) {
+      const accepted = await confirm({
+        title: '¿Confirmar tarifa inusual?',
+        description: `Estás configurando ${formatCOP(parsed)} COP por paquete entregado. El rango habitual está entre $500 y $50.000 COP.`,
+        confirmLabel: 'Sí, aplicar tarifa',
+        cancelLabel: 'Corregir valor',
+        variant: 'warning',
+      });
+      if (!accepted) return;
+    }
+
     await updatePackageRateSetting(parsed, recalculateCurrentShift);
-    setStatusMessage(
+    toast.success(
+      `✅ Tarifa actualizada a ${formatCOP(parsed)} COP`,
       recalculateCurrentShift
-        ? `✅ Tarifa actualizada a ${formatCOP(parsed)} COP y recalculada en la jornada actual.`
-        : `✅ Tarifa actualizada a ${formatCOP(parsed)} COP para todos los nuevos paquetes.`
+        ? 'Se recalcularon los paquetes de la jornada actual.'
+        : 'Aplica para todos los nuevos paquetes.'
     );
+    syncToSupabase(true).catch(() => {});
   };
 
   // --- ACCIONES DE SNAPSHOTS Y BÓVEDA DE SESIONES POR FECHA ---
   const handleCreateManualCheckpoint = async () => {
-    setIsCreatingCheckpoint(true);
+    setCheckpointBtnState('loading');
     try {
+      const nowFormatted = new Date().toLocaleString('es-CO', {
+        dateStyle: 'short',
+        timeStyle: 'short',
+      });
+      const autoName = customSessionName.trim() || `Sesión Manual - ${nowFormatted}`;
       const snap = await createBackupSnapshot({
-        sessionName: customSessionName.trim() || undefined,
+        sessionName: autoName,
         triggerType: 'manual_checkpoint',
-        autoDownloadFile: false
+        autoDownloadFile: false,
       });
       await pushSnapshotToSupabase(snap);
       setCustomSessionName('');
       setExpandedFolderDates((prev) => ({ ...prev, [snap.folderDate]: true }));
-      setStatusMessage(
-        `📌 Punto de restauración "${snap.sessionName}" guardado en carpeta 📁 ${snap.folderDate}.`
+      setCheckpointBtnState('ready');
+      toast.success(
+        `📌 Punto de restauración guardado (${snap.stats.packagesCount} paquetes)`,
+        `"${snap.sessionName}" en carpeta 📁 ${snap.folderDate}`
       );
-    } finally {
-      setIsCreatingCheckpoint(false);
+      setTimeout(() => setCheckpointBtnState('idle'), 1500);
+    } catch {
+      setCheckpointBtnState('idle');
+      toast.error('⚠️ Error al guardar punto de restauración');
     }
   };
 
   const handleRestoreSnapshotSession = async (snap: BackupSnapshotRecord) => {
     if (snap.id === undefined) return;
-    const confirmMsg = `🔄 ¿Restaurar la sesión "${snap.sessionName}" del ${snap.folderDate}?\n\nContiene ${snap.stats.packagesCount} paquetes (${snap.stats.deliveredCount} entregados = ${formatCOP(
-      snap.stats.totalGrossCOP,
-      true
-    )}).\n\nNota: Se guardará automáticamente un respaldo de tu estado actual antes de restaurar.`;
-    if (!window.confirm(confirmMsg)) return;
+    const accepted = await confirm({
+      title: `¿Restaurar "${snap.sessionName}"?`,
+      description: `Se cargará la sesión del ${snap.folderDate} en tu vista operativa actual.`,
+      details: [
+        `Paquetes en esta sesión: ${snap.stats.packagesCount} (${snap.stats.deliveredCount} entregados)`,
+        `Valor bruto registrado: ${formatCOP(snap.stats.totalGrossCOP, true)}`,
+        'Se guardará automáticamente un respaldo previo de tu estado actual antes de restaurar.',
+      ],
+      confirmLabel: '🔄 Restaurar Sesión',
+      cancelLabel: 'Cancelar',
+      variant: 'info',
+    });
+    if (!accepted) return;
 
-    const restored = await restoreSessionFromSnapshot(snap.id);
-    setStatusMessage(
-      `✅ Sesión "${restored.sessionName}" restaurada al 100% (${restored.stats.packagesCount} paquetes recuperados).`
-    );
+    setRestoringSnapId(snap.id);
+    try {
+      const restored = await restoreSessionFromSnapshot(snap.id);
+      toast.success(
+        `✅ Sesión "${restored.sessionName}" restaurada al 100%`,
+        `${restored.stats.packagesCount} paquetes recuperados en tu ruta.`
+      );
+    } catch {
+      toast.error('⚠️ No se pudo restaurar la sesión seleccionada');
+    } finally {
+      setTimeout(() => setRestoringSnapId(null), 1200);
+    }
   };
 
   const handleDeleteSnapshot = async (snap: BackupSnapshotRecord) => {
     if (snap.id === undefined) return;
-    if (window.confirm(`¿Eliminar el snapshot "${snap.sessionName}" de la bóveda?`)) {
-      await db.backupSnapshots.delete(snap.id);
-      setStatusMessage('🗑️ Snapshot eliminado de la bóveda.');
-    }
+    const accepted = await confirm({
+      title: '¿Eliminar Snapshot de la Bóveda?',
+      description: `Se eliminará el punto de restauración "${snap.sessionName}" (${snap.folderDate}).`,
+      confirmLabel: '🗑️ Sí, eliminar',
+      cancelLabel: 'Conservar',
+      variant: 'danger',
+    });
+    if (!accepted) return;
+
+    await db.backupSnapshots.delete(snap.id);
+    toast.info('🗑️ Snapshot eliminado de la bóveda');
   };
 
-  // --- FLUJO OBLIGATORIO: BORRAR BASE DE DATOS CON AUTO-BACKUP PREVIO POR FECHA ---
+  // --- FLUJO OBLIGATORIO CON BARRA DE PROGRESO PASO A PASO: BORRAR BASE DE DATOS ---
   const handleWipeDatabaseWithMandatoryBackup = async () => {
-    const confirmMsg =
-      '🛡️ BORRADO CON AUTO-BACKUP OBLIGATORIO:\n\n' +
-      'Antes de limpiar las tablas operativas (paquetes, jornadas y quincenas), MiRuta ejecutará automáticamente:\n' +
-      '1. Guardado de Snapshot en la Bóveda Local bajo la carpeta de fecha de hoy.\n' +
-      '2. Respaldo del Snapshot en Supabase Cloud.\n' +
-      '3. Descarga automática del archivo .JSON en tu dispositivo.\n\n' +
-      '¿Deseas proceder con el Auto-Backup y dejar la base operativa en cero?';
+    let createdSnap: BackupSnapshotRecord | null = null;
 
-    if (!window.confirm(confirmMsg)) return;
+    const accepted = await confirm({
+      title: '🛡️ Borrar Base Operativa con Auto-Backup',
+      description:
+        'Antes de limpiar las tablas operativas (paquetes, jornadas y quincenas), MiRuta ejecutará un protocolo de respaldo automático en 3 pasos:',
+      details: [
+        'La Bóveda de Sesiones (backupSnapshots) NO se borra.',
+        'Se descargará automáticamente una copia .JSON en tu dispositivo.',
+        'Podrás restaurar esta sesión cuando quieras con 1 toque.',
+      ],
+      steps: [
+        'Paso 1/3: Generando Snapshot de seguridad...',
+        'Paso 2/3: Subiendo respaldo a Supabase Cloud...',
+        'Paso 3/3: Limpiando tablas operativas...',
+      ],
+      confirmLabel: '🛡️ Respaldar y Borrar Ahora',
+      cancelLabel: 'Cancelar',
+      variant: 'danger',
+      onExecuteWithSteps: async (updateStep) => {
+        // Paso 1
+        updateStep(0, 'running');
+        await new Promise((r) => setTimeout(r, 250));
+        const mandatorySnapshot = await wipeOperationalDatabaseWithMandatoryBackup();
+        createdSnap = mandatorySnapshot;
+        updateStep(0, 'done');
 
-    try {
-      const mandatorySnapshot = await wipeOperationalDatabaseWithMandatoryBackup();
-      // Subir también a Supabase en segundo plano
-      pushSnapshotToSupabase(mandatorySnapshot);
-      setExpandedFolderDates((prev) => ({ ...prev, [mandatorySnapshot.folderDate]: true }));
-      setStatusMessage(
-        `✅ Auto-Backup creado en 📁 ${mandatorySnapshot.folderDate} (${mandatorySnapshot.stats.packagesCount} paq. respaldados) y base de datos operativa limpia en cero.`
-      );
-    } catch (err) {
-      alert(
-        err instanceof Error
-          ? err.message
-          : 'Por seguridad se canceló el borrado porque no se pudo confirmar el Auto-Backup.'
+        // Paso 2
+        updateStep(1, 'running');
+        await pushSnapshotToSupabase(mandatorySnapshot);
+        updateStep(1, 'done');
+
+        // Paso 3
+        updateStep(2, 'running');
+        await new Promise((r) => setTimeout(r, 250));
+        updateStep(2, 'done');
+      },
+    });
+
+    if (accepted && createdSnap) {
+      const snap = createdSnap as BackupSnapshotRecord;
+      setExpandedFolderDates((prev) => ({ ...prev, [snap.folderDate]: true }));
+      toast.success(
+        `✅ Auto-Backup creado en 📁 ${snap.folderDate}`,
+        `${snap.stats.packagesCount} paquetes respaldados y base operativa limpia en cero.`
       );
     }
   };
 
   // --- SINCRONIZACIÓN CLOUD SUPABASE ---
   const handleManualCloudSync = async () => {
-    setIsSyncingCloud(true);
+    setSyncBtnState('loading');
+    const toastId = toast.loading('☁️ Sincronizando datos con Supabase...');
     const res = await syncToSupabase(false);
-    setIsSyncingCloud(false);
-    const updated = getSupabaseConfig();
-    setLastSyncAt(updated.lastSyncAt);
-    setStatusMessage(res.message);
+    if (res.ok) {
+      setSyncBtnState('ready');
+      toast.updateToast(toastId, {
+        type: 'success',
+        title: '✅ Sincronización con Supabase completada',
+        description: res.message,
+        duration: 3500,
+      });
+      setTimeout(() => setSyncBtnState('idle'), 1500);
+    } else {
+      setSyncBtnState('idle');
+      toast.updateToast(toastId, {
+        type: 'warning',
+        title: '⚡ Guardado en bóveda local IndexedDB',
+        description: res.message,
+        duration: 4000,
+      });
+    }
   };
 
   const handleSaveCustomSupabaseConfig = async () => {
@@ -186,6 +283,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     const updated = getSupabaseConfig();
     setIsConfiguredSupa(updated.isConfigured);
     setProjectRef(updated.projectRef);
+    toast.success('🔐 Credenciales de Supabase actualizadas');
     await handleManualCloudSync();
   };
 
@@ -196,18 +294,21 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     setSupaKey(def.anonKey);
     setProjectRef(def.projectRef);
     setIsConfiguredSupa(def.isConfigured);
-    setStatusMessage('🟢 Restaurada conexión predeterminada a Supabase (qsoekxdghdklwduwleuh).');
+    toast.info('🟢 Conexión predeterminada restaurada', `Proyecto: ${def.projectRef}`);
   };
 
   const handleExportManualJSON = async () => {
     const snap = await createBackupSnapshot({
       sessionName: `Exportación Manual JSON (${new Date().toLocaleTimeString('es-CO')})`,
       triggerType: 'manual_checkpoint',
-      autoDownloadFile: false
+      autoDownloadFile: false,
     });
     await saveSnapshotToDateFolderWithDirectoryPicker(snap);
     await pushSnapshotToSupabase(snap);
-    setStatusMessage(`✅ Backup guardado en carpeta 📁 ${snap.folderDate} y descargado.`);
+    toast.success(
+      `✅ Backup guardado en carpeta 📁 ${snap.folderDate}`,
+      `${snap.stats.packagesCount} paquetes exportados en formato .JSON`
+    );
   };
 
   const handleImportJSONBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -217,11 +318,13 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
       const text = await file.text();
       const parsed = JSON.parse(text);
       if (!parsed || !Array.isArray(parsed.packages)) {
-        alert('El archivo seleccionado no es un backup válido de MiRuta.');
+        toast.error(
+          '⚠️ Archivo inválido',
+          'El archivo seleccionado no es un backup válido de MiRuta.'
+        );
         return;
       }
 
-      // Crear primero un punto de restauración en la bóveda con este archivo importado
       const now = new Date();
       const folderDate = parsed.folderDate || now.toISOString().slice(0, 10);
       const delivered = parsed.packages.filter(
@@ -241,19 +344,20 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           packagesCount: parsed.packages.length,
           deliveredCount: delivered.length,
           shiftsCount: Array.isArray(parsed.shifts) ? parsed.shifts.length : 0,
-          totalGrossCOP: totalGross
+          totalGrossCOP: totalGross,
         },
-        payloadJSON: text
+        payloadJSON: text,
       };
 
       const snapId = await db.backupSnapshots.add(importedSnap);
       await restoreSessionFromSnapshot(snapId);
 
-      setStatusMessage(
-        `✅ Backup importado y restaurado con éxito (${parsed.packages.length} paquetes recuperados).`
+      toast.success(
+        `✅ Backup importado con éxito`,
+        `${parsed.packages.length} paquetes recuperados en tu ruta.`
       );
     } catch {
-      alert('Error al leer o restaurar el archivo JSON.');
+      toast.error('⚠️ Error al leer o restaurar el archivo JSON');
     }
   };
 
@@ -274,33 +378,27 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           `${idx + 1}. Guía ${p.trackingNumber} (#${p.lastFourDigits}) | ${p.rawAddress} | ${
             p.deliveredAt ? new Date(p.deliveredAt).toLocaleString('es-CO') : 'Entregado'
           }`
-      )
+      ),
     ];
 
     await navigator.clipboard.writeText(lines.join('\n'));
     setCopied(true);
-    setStatusMessage('✅ Resumen completo de guías copiado al portapapeles.');
+    toast.success('📋 Resumen copiado al portapapeles', `${delivered.length} guías listas para pegar en WhatsApp`);
     setTimeout(() => setCopied(false), 3000);
   };
 
   const handleSeedDemo = async () => {
     await seedMedellinDemoBatch();
-    setStatusMessage('✅ Lote de prueba en Medellín cargado en la ruta de hoy.');
+    toast.success('✅ Lote de 6 paquetes demo cargado en Medellín');
   };
 
   const handleCleanOnlyTest = async () => {
     const removed = await clearStressTestPackages();
-    setStatusMessage(`🧹 ${removed} paquetes de prueba eliminados.`);
+    toast.info(`🧹 ${removed} paquetes de prueba eliminados`);
   };
 
   return (
     <div className="max-w-lg mx-auto px-4 py-2.5 space-y-3.5 pb-10">
-      {statusMessage && (
-        <div className="p-3 rounded-2xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold">
-          {statusMessage}
-        </div>
-      )}
-
       {/* 1. CONEXIÓN SUPABASE PRECONFIGURADA (qsoekxdghdklwduwleuh) */}
       <div
         className={`rounded-3xl border-2 p-4 shadow-xl space-y-3 ${
@@ -315,11 +413,16 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
               <Cloud className="w-5 h-5" />
             </div>
             <div>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                {isConfiguredSupa
-                  ? `🟢 Conectado a Supabase (${projectRef})`
-                  : '⚡ Modo 100% Local'}
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  {isConfiguredSupa
+                    ? `🟢 Conectado a Supabase (${projectRef})`
+                    : '⚡ Modo 100% Local'}
+                </span>
+                <span className="text-[10px] font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 rounded-full">
+                  ☁️ {cloudSync.relativeTimeLabel}
+                </span>
+              </div>
               <h2 className="text-sm sm:text-base font-black mt-1">
                 Respaldo Cloud en Tiempo Real
               </h2>
@@ -330,21 +433,29 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           </div>
         </div>
 
-        {lastSyncAt && (
-          <p className="text-[11px] text-emerald-400 font-semibold">
-            Última sincronización exitosa: {new Date(lastSyncAt).toLocaleString('es-CO')}
-          </p>
-        )}
-
         <div className="flex gap-2">
           <button
             type="button"
-            disabled={isSyncingCloud}
+            disabled={syncBtnState === 'loading'}
             onClick={handleManualCloudSync}
-            className="flex-1 py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 active:scale-95"
+            className="flex-1 py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-75 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 active:scale-95 transition-all"
           >
-            <CloudUpload className="w-4 h-4" />
-            <span>{isSyncingCloud ? 'Sincronizando con Supabase...' : '☁️ SINCRONIZAR AHORA'}</span>
+            {syncBtnState === 'loading' ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Sincronizando con Supabase...</span>
+              </>
+            ) : syncBtnState === 'ready' ? (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>✅ ¡Listo!</span>
+              </>
+            ) : (
+              <>
+                <CloudUpload className="w-4 h-4" />
+                <span>☁️ SINCRONIZAR AHORA</span>
+              </>
+            )}
           </button>
 
           <button
@@ -438,7 +549,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
               type="text"
               value={customSessionName}
               onChange={(e) => setCustomSessionName(e.target.value)}
-              placeholder="Ej: Corte Quincena 1 Nov / Antes de cambiar ruta..."
+              placeholder="Opcional: Ej. Corte Quincena 1 Nov (o vacío = automático)"
               className={`flex-1 rounded-xl px-3 py-2 text-xs font-bold border ${
                 highContrastSun
                   ? 'bg-white border-slate-300 text-slate-950'
@@ -447,12 +558,26 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             />
             <button
               type="button"
-              disabled={isCreatingCheckpoint}
+              disabled={checkpointBtnState !== 'idle'}
               onClick={handleCreateManualCheckpoint}
-              className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shrink-0 shadow-md"
+              className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-70 text-slate-950 font-black text-xs flex items-center gap-1.5 shrink-0 shadow-md active:scale-95 transition-all"
             >
-              <BookmarkPlus className="w-4 h-4" />
-              <span>Guardar</span>
+              {checkpointBtnState === 'loading' ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Guardando...</span>
+                </>
+              ) : checkpointBtnState === 'ready' ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>✅ ¡Listo!</span>
+                </>
+              ) : (
+                <>
+                  <BookmarkPlus className="w-4 h-4" />
+                  <span>Guardar</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -476,7 +601,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                     onClick={() =>
                       setExpandedFolderDates((prev) => ({
                         ...prev,
-                        [folderDate]: !isOpen
+                        [folderDate]: !isOpen,
                       }))
                     }
                     className="w-full px-3.5 py-2.5 bg-slate-900/90 flex items-center justify-between text-left"
@@ -502,8 +627,9 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                       {snaps.map((snap) => {
                         const timeStr = new Date(snap.timestamp).toLocaleTimeString('es-CO', {
                           hour: '2-digit',
-                          minute: '2-digit'
+                          minute: '2-digit',
                         });
+                        const isRestoringThis = restoringSnapId === snap.id;
                         return (
                           <div key={snap.id ?? snap.timestamp} className="pt-2 first:pt-0 space-y-2">
                             <div className="flex items-start justify-between gap-2">
@@ -542,17 +668,30 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                             <div className="grid grid-cols-3 gap-1.5">
                               <button
                                 type="button"
+                                disabled={isRestoringThis}
                                 onClick={() => handleRestoreSnapshotSession(snap)}
-                                className="py-1.5 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] flex items-center justify-center gap-1"
+                                className="py-1.5 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[11px] flex items-center justify-center gap-1 active:scale-95 transition-all"
                               >
-                                <RotateCcw className="w-3 h-3" />
-                                <span>Restaurar</span>
+                                {isRestoringThis ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Listo</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <RotateCcw className="w-3 h-3" />
+                                    <span>Restaurar</span>
+                                  </>
+                                )}
                               </button>
 
                               <button
                                 type="button"
-                                onClick={() => downloadSnapshotAsJSONFile(snap)}
-                                className="py-1.5 px-2 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-300 font-black text-[11px] flex items-center justify-center gap-1"
+                                onClick={() => {
+                                  downloadSnapshotAsJSONFile(snap);
+                                  toast.info('📥 Descargando archivo .JSON', snap.sessionName);
+                                }}
+                                className="py-1.5 px-2 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-300 font-black text-[11px] flex items-center justify-center gap-1 active:scale-95 transition-all"
                               >
                                 <Download className="w-3 h-3" />
                                 <span>.JSON</span>
@@ -561,7 +700,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleDeleteSnapshot(snap)}
-                                className="py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-rose-950 text-rose-400 font-bold text-[11px] flex items-center justify-center gap-1"
+                                className="py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-rose-950 text-rose-400 font-bold text-[11px] flex items-center justify-center gap-1 active:scale-95 transition-all"
                               >
                                 <Trash2 className="w-3 h-3" />
                                 <span>Eliminar</span>
@@ -583,7 +722,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           <button
             type="button"
             onClick={handleWipeDatabaseWithMandatoryBackup}
-            className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-600/25 active:scale-95"
+            className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-600/25 active:scale-95 transition-all"
           >
             <Trash2 className="w-4 h-4 shrink-0" />
             <span>🗑️ BORRAR BASE DE DATOS OPERATIVA (CON AUTO-BACKUP SEGURO)</span>
@@ -640,7 +779,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           </div>
           <div>
             <h2 className="text-base font-black">
-              Tarifa por Paquete Entregado
+              Tarifa por Paquete Entregado ($ COP)
             </h2>
             <p className="text-xs text-slate-400">
               Modifica el valor pagado por paquete en cualquier momento
@@ -648,13 +787,16 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="relative">
+          <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-black text-emerald-400">
+            $
+          </span>
           <input
-            type="number"
+            type="text"
             inputMode="numeric"
             value={rateInput}
-            onChange={(e) => setRateInput(e.target.value)}
-            className={`w-full rounded-xl px-3.5 py-2.5 text-base font-black font-mono border ${
+            onChange={(e) => setRateInput(formatLiveCOPInput(e.target.value))}
+            className={`w-full rounded-xl pl-8 pr-3.5 py-2.5 text-base font-black font-mono border ${
               highContrastSun
                 ? 'bg-slate-50 border-slate-300 text-slate-950'
                 : 'bg-slate-950 border-slate-700 text-white'
@@ -666,7 +808,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           <button
             type="button"
             onClick={() => handleSaveRate(false)}
-            className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-1.5"
+            className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all"
           >
             <Check className="w-4 h-4" />
             <span>Solo Nuevos Paquetes</span>
@@ -674,7 +816,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           <button
             type="button"
             onClick={() => handleSaveRate(true)}
-            className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-1.5"
+            className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all"
           >
             <RefreshCw className="w-4 h-4" />
             <span>Recalcular Jornada Actual</span>
@@ -708,13 +850,13 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           <button
             type="button"
             onClick={handleExportManualJSON}
-            className="w-full py-3.5 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 active:scale-95"
+            className="w-full py-3.5 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 active:scale-95 transition-all"
           >
             <Download className="w-4 h-4" />
             <span>EXPORTAR BACKUP EN CARPETA POR FECHA (.JSON)</span>
           </button>
 
-          <label className="w-full py-3.5 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 font-black text-xs flex items-center justify-center gap-2 cursor-pointer active:scale-95">
+          <label className="w-full py-3.5 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 font-black text-xs flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all">
             <Upload className="w-4 h-4 text-emerald-400" />
             <span>RESTAURAR / IMPORTAR ARCHIVO (.JSON)</span>
             <input
@@ -728,7 +870,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
           <button
             type="button"
             onClick={handleCopySummaryToClipboard}
-            className="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 active:scale-95"
+            className="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 active:scale-95 transition-all"
           >
             {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
             <span>
@@ -747,7 +889,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             <button
               type="button"
               onClick={handleSeedDemo}
-              className="py-2.5 px-2 rounded-xl bg-slate-800 border border-slate-700 text-blue-400 font-extrabold text-xs flex items-center justify-center gap-1.5"
+              className="py-2.5 px-2 rounded-xl bg-slate-800 border border-slate-700 text-blue-400 font-extrabold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all"
             >
               <PackagePlus className="w-4 h-4" />
               <span>Cargar 6 Demo</span>
@@ -756,7 +898,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
             <button
               type="button"
               onClick={handleCleanOnlyTest}
-              className="py-2.5 px-2 rounded-xl bg-amber-950/50 border border-amber-500/40 text-amber-300 font-extrabold text-xs flex items-center justify-center gap-1.5"
+              className="py-2.5 px-2 rounded-xl bg-amber-950/50 border border-amber-500/40 text-amber-300 font-extrabold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all"
             >
               <Trash2 className="w-4 h-4" />
               <span>Limpiar Lote Test</span>
@@ -767,7 +909,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800 text-[11px] text-slate-400 flex items-start gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
           <span>
-            <strong>MiRuta by Christian Romero (v3.5):</strong> Conectado a Supabase (`qsoekxdghdklwduwleuh`) con Bóveda de Backups por Fecha y Auto-Respaldo obligatorio pre-borrado.
+            <strong>MiRuta by Christian Romero (v4.0):</strong> Conectado a Supabase (`qsoekxdghdklwduwleuh`) con Bóveda de Backups por Fecha, Validaciones en Tiempo Real y Auto-Respaldo obligatorio pre-borrado.
           </span>
         </div>
       </div>

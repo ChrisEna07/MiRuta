@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { Html5Qrcode } from 'html5-qrcode';
 import {
   Camera,
@@ -12,7 +13,11 @@ import {
   MapPin,
   User,
   Hash,
-  FlaskConical
+  FlaskConical,
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import {
   db,
@@ -21,11 +26,17 @@ import {
   getTodayShiftId,
   ensureShiftExists,
   getDefaultPackageRate,
-  type DeliveryPackage
+  type DeliveryPackage,
 } from '../db/database';
 import { parseMedellinAddress, parseIMileLabelBlock } from '../utils/addressParser';
 import { estimateMedellinCoordinatesFromAddress } from '../utils/routeOptimizer';
 import { formatCOP } from '../utils/mediaAndFeedback';
+import {
+  sanitizeTrackingInput,
+  validateAndFormatColombianPhone,
+} from '../utils/formatters';
+import { syncToSupabase } from '../services/supabaseSync';
+import { useToast } from './ui/FeedbackSystem';
 
 interface ScannerModalProps {
   isOpen: boolean;
@@ -38,26 +49,51 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   isOpen,
   onClose,
   onOpenTestLab,
-  highContrastSun
+  highContrastSun,
 }) => {
+  const toast = useToast();
+
   const [trackingNumber, setTrackingNumber] = useState<string>('');
   const [recipientName, setRecipientName] = useState<string>('');
   const [recipientPhone, setRecipientPhone] = useState<string>('');
   const [rawAddress, setRawAddress] = useState<string>('');
   const [neighborhood, setNeighborhood] = useState<string>('Medellín');
   const [smartBlockText, setSmartBlockText] = useState<string>('');
+  const [editingPackageId, setEditingPackageId] = useState<number | null>(null);
 
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string>('');
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
-  const [savedBanner, setSavedBanner] = useState<string>('');
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'ready'>('idle');
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const scannerContainerId = 'miruta-barcode-reader-region';
 
+  const todayShiftId = getTodayShiftId();
+  const todayPackages =
+    useLiveQuery(
+      () => db.packages.where('shiftId').equals(todayShiftId).toArray(),
+      [todayShiftId]
+    ) || [];
+
+  // Detección en vivo de duplicados en la ruta de hoy
+  const duplicateTodayPkg = React.useMemo(() => {
+    const clean = sanitizeTrackingInput(trackingNumber);
+    if (clean.length < 4) return null;
+    return (
+      todayPackages.find(
+        (p) =>
+          p.id !== editingPackageId &&
+          (p.trackingNumber.toUpperCase() === clean ||
+            (clean.length === 4 && p.lastFourDigits === clean))
+      ) || null
+    );
+  }, [trackingNumber, todayPackages, editingPackageId]);
+
   useEffect(() => {
     if (!isOpen) {
       stopCameraScanner();
+      setEditingPackageId(null);
     }
     return () => {
       stopCameraScanner();
@@ -76,15 +112,16 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             { facingMode: 'environment' },
             {
               fps: 15,
-              qrbox: { width: 260, height: 115 }
+              qrbox: { width: 260, height: 115 },
             },
             (decodedText) => {
-              const clean = decodedText.trim();
+              const clean = sanitizeTrackingInput(decodedText);
               if (clean) {
                 setTrackingNumber(clean);
                 if (typeof navigator !== 'undefined' && navigator.vibrate) {
                   navigator.vibrate(90);
                 }
+                toast.success(`📷 Guía #${extractLastFourDigits(clean)} capturada`);
                 stopCameraScanner();
               }
             },
@@ -129,7 +166,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
 
     if (!SpeechRecognitionAPI) {
-      alert('Tu navegador no soporta dictado directo. Usa el botón de micrófono del teclado de tu Android.');
+      toast.warning(
+        '🎙️ Dictado directo no soportado en este navegador',
+        'Usa el botón de micrófono del teclado de tu Android.'
+      );
       return;
     }
 
@@ -153,6 +193,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         if (transcript) {
           setSmartBlockText(transcript);
           applySmartBlockParse(transcript);
+          toast.info('🎙️ Texto capturado por voz', transcript);
         }
         setIsListeningVoice(false);
       };
@@ -173,67 +214,142 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
   const applySmartBlockParse = (textToParse: string) => {
     const parsed = parseIMileLabelBlock(textToParse);
-    if (parsed.trackingNumber && !trackingNumber) setTrackingNumber(parsed.trackingNumber);
+    if (parsed.trackingNumber && !trackingNumber) {
+      setTrackingNumber(sanitizeTrackingInput(parsed.trackingNumber));
+    }
     if (parsed.recipientName) setRecipientName(parsed.recipientName);
-    if (parsed.recipientPhone) setRecipientPhone(parsed.recipientPhone);
+    if (parsed.recipientPhone) {
+      const formattedPhone = validateAndFormatColombianPhone(parsed.recipientPhone);
+      setRecipientPhone(formattedPhone.formatted);
+    }
     if (parsed.rawAddress) setRawAddress(parsed.rawAddress);
   };
 
+  const handleLoadDuplicateForUpdate = (pkg: DeliveryPackage) => {
+    setEditingPackageId(pkg.id ?? null);
+    setTrackingNumber(pkg.trackingNumber);
+    setRecipientName(pkg.recipientName);
+    setRecipientPhone(validateAndFormatColombianPhone(pkg.recipientPhone).formatted);
+    setRawAddress(pkg.rawAddress);
+    setNeighborhood(pkg.parsedAddress?.neighborhood || 'Medellín');
+    toast.info(
+      `✏️ Editando guía #${pkg.lastFourDigits}`,
+      'Actualiza los datos y guarda sin duplicar el paquete.'
+    );
+  };
+
   const parsedAddressPreview = parseMedellinAddress(rawAddress, neighborhood);
+  const isAddressComplete =
+    parsedAddressPreview.mainNum > 0 && parsedAddressPreview.secNum > 0;
+  const phoneValidation = validateAndFormatColombianPhone(recipientPhone);
   const lastFourPreview = extractLastFourDigits(trackingNumber || '0000');
   const activeDefaultRate = getDefaultPackageRate();
 
   const handleSavePackage = async (e: React.FormEvent, keepOpenForNext = true) => {
     e.preventDefault();
-    if (!rawAddress.trim()) {
-      alert('Ingresa la dirección de entrega (ej: Carrera 43c #100 52)');
+
+    const cleanTrack = sanitizeTrackingInput(trackingNumber);
+    if (cleanTrack.length > 0 && cleanTrack.length < 6) {
+      toast.error(
+        '⚠️ La guía debe tener al menos 6 caracteres válidos',
+        'Verifica el número de guía iMile o déjalo vacío para autogenerar.'
+      );
       return;
     }
 
-    const finalTracking =
-      trackingNumber.trim() ||
-      `610302${Math.floor(1000000 + Math.random() * 9000000)}`;
-    const shiftId = getTodayShiftId();
-    await ensureShiftExists(shiftId);
-
-    const existingToday = await db.packages.where('shiftId').equals(shiftId).toArray();
-    const maxOrder = existingToday.reduce((max, p) => Math.max(max, p.routeOrder || 0), 0);
-
-    const parsedAddr = parseMedellinAddress(rawAddress, neighborhood);
-    const newPkg: DeliveryPackage = {
-      trackingNumber: finalTracking,
-      lastFourDigits: extractLastFourDigits(finalTracking),
-      recipientName: recipientName.trim() || 'Cliente iMile',
-      recipientPhone: normalizeColombianPhone(recipientPhone),
-      rawAddress: rawAddress.trim(),
-      parsedAddress: parsedAddr,
-      coordinates: null,
-      routeOrder: maxOrder + 1,
-      status: 'pending',
-      issueNote: '',
-      rate: getDefaultPackageRate(),
-      shiftId,
-      scannedAt: Date.now(),
-      archivedInHistory: false
-    };
-    newPkg.coordinates = estimateMedellinCoordinatesFromAddress(newPkg);
-
-    await db.packages.add(newPkg);
-
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      navigator.vibrate(60);
+    if (!rawAddress.trim()) {
+      toast.error(
+        '⚠️ Ingresa la dirección de entrega',
+        'Ejemplo: Carrera 43C # 100 - 52 (Medellín)'
+      );
+      return;
     }
 
-    setSavedBanner(`✅ Paquete #${newPkg.lastFourDigits} guardado (${newPkg.rawAddress})`);
-    setTrackingNumber('');
-    setRecipientName('');
-    setRecipientPhone('');
-    setRawAddress('');
-    setSmartBlockText('');
+    if (duplicateTodayPkg && !editingPackageId) {
+      toast.warning(
+        `⚠️ La guía #${duplicateTodayPkg.lastFourDigits} ya está en tu ruta de hoy`,
+        'Pulsa "Cargar para actualizar" en el aviso amarillo para no duplicarla.'
+      );
+      return;
+    }
 
-    setTimeout(() => setSavedBanner(''), 3000);
-    if (!keepOpenForNext) {
-      onClose();
+    setSaveState('saving');
+
+    try {
+      const finalTracking =
+        cleanTrack || `610302${Math.floor(1000000 + Math.random() * 9000000)}`;
+      const shiftId = getTodayShiftId();
+      await ensureShiftExists(shiftId);
+
+      const parsedAddr = parseMedellinAddress(rawAddress, neighborhood);
+
+      if (editingPackageId) {
+        const existingPkg = await db.packages.get(editingPackageId);
+        if (existingPkg) {
+          const updatedPkg: DeliveryPackage = {
+            ...existingPkg,
+            trackingNumber: finalTracking,
+            lastFourDigits: extractLastFourDigits(finalTracking),
+            recipientName: recipientName.trim() || 'Cliente iMile',
+            recipientPhone: normalizeColombianPhone(recipientPhone),
+            rawAddress: rawAddress.trim(),
+            parsedAddress: parsedAddr,
+          };
+          updatedPkg.coordinates = estimateMedellinCoordinatesFromAddress(updatedPkg);
+          await db.packages.put(updatedPkg);
+          toast.success(
+            `✅ Guía #${updatedPkg.lastFourDigits} actualizada sin duplicar`,
+            updatedPkg.rawAddress
+          );
+        }
+      } else {
+        const existingToday = await db.packages.where('shiftId').equals(shiftId).toArray();
+        const maxOrder = existingToday.reduce((max, p) => Math.max(max, p.routeOrder || 0), 0);
+
+        const newPkg: DeliveryPackage = {
+          trackingNumber: finalTracking,
+          lastFourDigits: extractLastFourDigits(finalTracking),
+          recipientName: recipientName.trim() || 'Cliente iMile',
+          recipientPhone: normalizeColombianPhone(recipientPhone),
+          rawAddress: rawAddress.trim(),
+          parsedAddress: parsedAddr,
+          coordinates: null,
+          routeOrder: maxOrder + 1,
+          status: 'pending',
+          issueNote: '',
+          rate: getDefaultPackageRate(),
+          shiftId,
+          scannedAt: Date.now(),
+          archivedInHistory: false,
+        };
+        newPkg.coordinates = estimateMedellinCoordinatesFromAddress(newPkg);
+
+        await db.packages.add(newPkg);
+        toast.success(
+          `✅ Paquete #${newPkg.lastFourDigits} registrado en ruta`,
+          `${newPkg.rawAddress} • Sincronizando con Supabase`
+        );
+      }
+
+      syncToSupabase(true).catch(() => {});
+
+      setSaveState('ready');
+      setEditingPackageId(null);
+      setTrackingNumber('');
+      setRecipientName('');
+      setRecipientPhone('');
+      setRawAddress('');
+      setSmartBlockText('');
+
+      setTimeout(() => {
+        setSaveState('idle');
+        if (!keepOpenForNext) {
+          onClose();
+        }
+      }, 900);
+    } catch {
+      setSaveState('idle');
+      toast.error('⚠️ No se pudo guardar el paquete en IndexedDB');
     }
   };
 
@@ -256,7 +372,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             </div>
             <div className="min-w-0">
               <h2 className="text-base font-black leading-tight truncate">
-                Escanear Guía en MiRuta
+                {editingPackageId ? 'Actualizar Guía en Ruta' : 'Escanear Guía en MiRuta'}
               </h2>
               <p className="text-xs text-slate-400">
                 Tarifa activa: {formatCOP(activeDefaultRate)} COP • 100% Offline
@@ -287,12 +403,6 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             </button>
           </div>
         </div>
-
-        {savedBanner && (
-          <div className="mt-3 p-2.5 rounded-xl bg-emerald-600 text-white text-xs font-black text-center animate-pulse">
-            {savedBanner}
-          </div>
-        )}
 
         {/* Camera Barcode Scanner Section */}
         <div className="mt-3">
@@ -382,20 +492,30 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             <div className="col-span-2">
               <label className="block text-[11px] font-bold text-slate-400 mb-1 flex items-center gap-1">
                 <Hash className="w-3.5 h-3.5 text-blue-400" />
-                GUÍA IMILE (O ÚLTIMOS 4 DÍGITOS)
+                GUÍA IMILE (MÍN. 6 CARACTERES)
               </label>
               <input
                 type="text"
-                inputMode="numeric"
                 value={trackingNumber}
-                onChange={(e) => setTrackingNumber(e.target.value)}
+                onChange={(e) => setTrackingNumber(sanitizeTrackingInput(e.target.value))}
                 placeholder="Ej: 6103026696672"
-                className={`w-full rounded-xl px-3 py-2.5 text-sm font-mono font-bold border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                className={`w-full rounded-xl px-3 py-2.5 text-sm font-mono font-bold border focus:outline-none focus:ring-2 ${
+                  duplicateTodayPkg
+                    ? 'border-amber-500 focus:ring-amber-500'
+                    : trackingNumber.length > 0 && trackingNumber.length < 6
+                    ? 'border-rose-500 focus:ring-rose-500'
+                    : 'border-slate-700 focus:ring-blue-500'
+                } ${
                   highContrastSun
-                    ? 'bg-white border-slate-300 text-slate-950'
-                    : 'bg-slate-950 border-slate-700 text-white'
+                    ? 'bg-white text-slate-950'
+                    : 'bg-slate-950 text-white'
                 }`}
               />
+              {trackingNumber.length > 0 && trackingNumber.length < 6 && (
+                <p className="text-[10px] font-bold text-rose-400 mt-1">
+                  ⚠️ Mínimo 6 caracteres alfanuméricos ({trackingNumber.length}/6)
+                </p>
+              )}
             </div>
 
             <div className="flex flex-col items-center justify-center p-2 rounded-2xl bg-amber-500/15 border-2 border-amber-500/60">
@@ -407,6 +527,31 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               </span>
             </div>
           </div>
+
+          {/* Aviso de Guía Duplicada en tiempo real */}
+          {duplicateTodayPkg && (
+            <div className="p-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/50 flex items-center justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="text-[11px] leading-tight">
+                  <p className="font-black text-amber-300">
+                    ⚠️ Esta guía (#{duplicateTodayPkg.lastFourDigits}) ya está en tu ruta de hoy
+                  </p>
+                  <p className="text-amber-200/80 truncate mt-0.5">
+                    {duplicateTodayPkg.rawAddress} ({duplicateTodayPkg.recipientName})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleLoadDuplicateForUpdate(duplicateTodayPkg)}
+                className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10px] shrink-0 flex items-center gap-1"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Actualizar</span>
+              </button>
+            </div>
+          )}
 
           <div>
             <label className="block text-[11px] font-bold text-slate-400 mb-1 flex items-center gap-1">
@@ -426,16 +571,31 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               }`}
             />
             {rawAddress.trim() && (
-              <div className="mt-1 flex items-center justify-between text-[11px] font-bold text-emerald-400 px-1 flex-wrap gap-1">
-                <span>
-                  Nomenclatura: {parsedAddressPreview.mainType}{' '}
-                  {parsedAddressPreview.mainNum}
-                  {parsedAddressPreview.mainLetter} # {parsedAddressPreview.secNum}
-                  {parsedAddressPreview.secLetter} - {parsedAddressPreview.plate}
-                </span>
-                <span className="font-mono bg-emerald-500/15 px-1.5 py-0.5 rounded">
-                  Cuadra: {parsedAddressPreview.blockKey}
-                </span>
+              <div
+                className={`mt-1.5 px-2.5 py-1.5 rounded-xl border flex items-center justify-between text-[11px] font-bold flex-wrap gap-1 ${
+                  isAddressComplete
+                    ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                    : 'bg-amber-950/40 border-amber-500/40 text-amber-300'
+                }`}
+              >
+                {isAddressComplete ? (
+                  <>
+                    <span>
+                      ✅ Detectado: {parsedAddressPreview.mainType}{' '}
+                      {parsedAddressPreview.mainNum}
+                      {parsedAddressPreview.mainLetter} # {parsedAddressPreview.secNum}
+                      {parsedAddressPreview.secLetter} - {parsedAddressPreview.plate} (
+                      {neighborhood || 'Medellín'})
+                    </span>
+                    <span className="font-mono bg-emerald-500/20 px-1.5 py-0.5 rounded text-[10px]">
+                      Cuadra: {parsedAddressPreview.blockKey}
+                    </span>
+                  </>
+                ) : (
+                  <span>
+                    ⚠️ Agrega el número de calle/carrera para enrutar mejor (ej. CR 43C # 100 - 52)
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -462,20 +622,38 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             <div>
               <label className="block text-[11px] font-bold text-slate-400 mb-1 flex items-center gap-1">
                 <Phone className="w-3.5 h-3.5 text-emerald-400" />
-                CELULAR WHATSAPP (573...)
+                CELULAR WHATSAPP (COLOMBIA)
               </label>
               <input
                 type="tel"
                 inputMode="tel"
                 value={recipientPhone}
-                onChange={(e) => setRecipientPhone(e.target.value)}
+                onChange={(e) => {
+                  const res = validateAndFormatColombianPhone(e.target.value);
+                  setRecipientPhone(res.formatted);
+                }}
                 placeholder="322 587 3762"
-                className={`w-full rounded-xl px-3 py-2 text-sm font-mono font-bold border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                className={`w-full rounded-xl px-3 py-2 text-sm font-mono font-bold border focus:outline-none focus:ring-2 ${
+                  recipientPhone && !phoneValidation.isValid
+                    ? 'border-amber-500 focus:ring-amber-500'
+                    : recipientPhone && phoneValidation.isValid
+                    ? 'border-emerald-500 focus:ring-emerald-500'
+                    : 'border-slate-700 focus:ring-blue-500'
+                } ${
                   highContrastSun
-                    ? 'bg-white border-slate-300 text-slate-950'
-                    : 'bg-slate-950 border-slate-700 text-white'
+                    ? 'bg-white text-slate-950'
+                    : 'bg-slate-950 text-white'
                 }`}
               />
+              {recipientPhone && phoneValidation.helperText && (
+                <p
+                  className={`text-[10px] font-bold mt-1 ${
+                    phoneValidation.isValid ? 'text-emerald-400' : 'text-amber-400'
+                  }`}
+                >
+                  {phoneValidation.helperText}
+                </p>
+              )}
             </div>
           </div>
 
@@ -499,14 +677,30 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           <div className="pt-2 flex gap-2">
             <button
               type="submit"
-              className="flex-1 py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm shadow-lg shadow-emerald-600/30 active:scale-[0.99]"
+              disabled={saveState !== 'idle'}
+              className="flex-1 py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-75 text-white font-black text-sm shadow-lg shadow-emerald-600/30 active:scale-[0.99] flex items-center justify-center gap-2 transition-all"
             >
-              + GUARDAR Y ESCANEAR OTRO
+              {saveState === 'saving' ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>GUARDANDO...</span>
+                </>
+              ) : saveState === 'ready' ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>✅ ¡LISTO!</span>
+                </>
+              ) : editingPackageId ? (
+                <span>💾 ACTUALIZAR PAQUETE EXISTENTE</span>
+              ) : (
+                <span>+ GUARDAR Y ESCANEAR OTRO</span>
+              )}
             </button>
             <button
               type="button"
+              disabled={saveState !== 'idle'}
               onClick={(e) => handleSavePackage(e, false)}
-              className="py-3.5 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs"
+              className="py-3.5 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 disabled:opacity-75 text-white font-bold text-xs active:scale-95 transition-all"
             >
               Guardar y Salir
             </button>

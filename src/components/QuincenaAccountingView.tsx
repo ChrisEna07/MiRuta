@@ -28,7 +28,10 @@ import {
   type SettlementStatus
 } from '../db/database';
 import { formatCOP } from '../utils/mediaAndFeedback';
+import { formatLiveCOPInput, parseLiveCOPInput, sanitizeTrackingInput } from '../utils/formatters';
 import { generateAndShareQuincenaPDF } from '../utils/pdfReport';
+import { syncToSupabase } from '../services/supabaseSync';
+import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface QuincenaAccountingViewProps {
   highContrastSun: boolean;
@@ -39,6 +42,8 @@ type CutoffMode = 'q1' | 'q2' | 'custom';
 export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
   highContrastSun
 }) => {
+  const toast = useToast();
+  const { confirm } = useConfirm();
   const now = new Date();
   const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const defaultCutoff: CutoffMode = now.getDate() <= 15 ? 'q1' : 'q2';
@@ -116,7 +121,7 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
     if (existingSettlement) {
       setActualPaidInput(
         existingSettlement.actualPaidAmount > 0
-          ? String(existingSettlement.actualPaidAmount)
+          ? formatLiveCOPInput(String(existingSettlement.actualPaidAmount))
           : ''
       );
       setReportedPkgsInput(
@@ -191,13 +196,18 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
     amount: number
   ) => {
     const equivPkgs = Math.ceil(amount / defaultRate);
-    const confirmMsg = `¿Registrar "${title}" por -${formatCOP(
-      amount,
-      true
-    )} en esta quincena?\n\n⚠️ Equivalencia: ${equivPkgs} paquetes entregados a ${formatCOP(
-      defaultRate
-    )} c/u.`;
-    if (!window.confirm(confirmMsg)) return;
+    const accepted = await confirm({
+      title: `¿Registrar "${title}"?`,
+      description: `Se descontará -${formatCOP(amount, true)} en la liquidación de este corte quincenal.`,
+      details: [
+        `Impacto operativo: Equivale a ${equivPkgs} paquetes entregados a ${formatCOP(defaultRate)} c/u.`,
+        'Puedes activar o desactivar si aparece en el PDF del Sr. Juan.',
+      ],
+      confirmLabel: 'Sí, registrar penalización',
+      cancelLabel: 'Cancelar',
+      variant: 'danger',
+    });
+    if (!accepted) return;
 
     const targetDate =
       startDateStr <= getTodayShiftId() && getTodayShiftId() <= endDateStr
@@ -213,13 +223,18 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
       notes: `Equivale a ${equivPkgs} entregas (${formatCOP(defaultRate)}/paq)`,
       applyToJuanPdf: true
     });
+    toast.warning(`⚠️ Penalización registrada (-${formatCOP(amount)})`, title);
+    syncToSupabase(true).catch(() => {});
   };
 
   const handleSaveManualDiscount = async (e: React.FormEvent) => {
     e.preventDefault();
-    const numericAmount = parseInt(discountAmount.replace(/\D/g, ''), 10) || 0;
+    const numericAmount = parseLiveCOPInput(discountAmount);
     if (!discountTitle.trim() || numericAmount <= 0) {
-      alert('Ingresa el concepto y un monto válido en pesos.');
+      toast.error(
+        '⚠️ Datos incompletos',
+        'Ingresa el concepto y un monto válido mayor a $0 COP.'
+      );
       return;
     }
 
@@ -234,10 +249,16 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
       type: discountType,
       title: discountTitle.trim(),
       amount: numericAmount,
-      trackingNumber: discountTracking.trim() || undefined,
+      trackingNumber: sanitizeTrackingInput(discountTracking) || undefined,
       notes: discountNotes.trim(),
       applyToJuanPdf: discountApplyPdf
     });
+
+    toast.success(
+      `✅ Descuento registrado (-${formatCOP(numericAmount)})`,
+      discountTitle.trim()
+    );
+    syncToSupabase(true).catch(() => {});
 
     setDiscountTitle('');
     setDiscountAmount('');
@@ -249,19 +270,34 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
   const handleToggleDeductionPdf = async (id?: number, current?: boolean) => {
     if (id === undefined) return;
     await db.deductions.update(id, { applyToJuanPdf: !current });
+    toast.info(
+      !current
+        ? '📄 Descuento incluido en el PDF para el Sr. Juan'
+        : '🔒 Descuento marcado solo para tu control privado'
+    );
   };
 
   const handleDeleteDeduction = async (id?: number) => {
     if (id === undefined) return;
+    const accepted = await confirm({
+      title: '¿Eliminar este descuento o penalización?',
+      description: 'Se recalculará inmediatamente el neto de tu quincena.',
+      confirmLabel: '🗑️ Eliminar',
+      cancelLabel: 'Cancelar',
+      variant: 'danger',
+    });
+    if (!accepted) return;
     await db.deductions.delete(id);
+    toast.info('🗑️ Descuento eliminado');
+    syncToSupabase(true).catch(() => {});
   };
 
   // --- CÁLCULO DE AUDITORÍA Y CONCILIACIÓN: LO CALCULADO VS. LO PAGADO POR LA EMPRESA ---
   const hasEnteredPaidAmount = actualPaidInput.trim() !== '';
-  const actualPaidNumber = parseInt(actualPaidInput.replace(/\D/g, ''), 10) || 0;
+  const actualPaidNumber = parseLiveCOPInput(actualPaidInput);
   const reportedPkgsNumber =
     reportedPkgsInput.trim() !== ''
-      ? parseInt(reportedPkgsInput.replace(/\D/g, ''), 10)
+      ? Math.max(0, parseInt(reportedPkgsInput.replace(/\D/g, ''), 10) || 0)
       : undefined;
 
   const paymentDiff = actualPaidNumber - expectedNetFromCompany;
@@ -302,6 +338,8 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
     }
 
     setSettlementSavedMsg('✅ Auditoría de liquidación guardada en IndexedDB.');
+    toast.success('✅ Auditoría de liquidación guardada', `${periodLabel} • ${paymentMethod}`);
+    syncToSupabase(true).catch(() => {});
     setTimeout(() => setSettlementSavedMsg(''), 3500);
   };
 
@@ -350,6 +388,14 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
         },
         mode
       );
+      toast.success(
+        mode === 'share'
+          ? `📄 PDF generado para enviar al ${employerName}`
+          : '📥 Cuenta de cobro PDF descargada',
+        `${deliveredPackages.length} paquetes incluidos en el reporte.`
+      );
+    } catch {
+      toast.error('⚠️ Error al generar el PDF');
     } finally {
       setGeneratingPdf(false);
     }
@@ -547,18 +593,23 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
             <label className="text-[10px] font-black uppercase tracking-wider text-amber-400 block">
               COLUMNA B • LO QUE PAGÓ LA EMPRESA ($ COP)
             </label>
-            <input
-              type="number"
-              inputMode="numeric"
-              value={actualPaidInput}
-              onChange={(e) => setActualPaidInput(e.target.value)}
-              placeholder={`Ej: ${expectedNetFromCompany}`}
-              className={`mt-1 w-full rounded-xl px-3 py-2 text-base font-black font-mono border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                highContrastSun
-                  ? 'bg-white border-slate-300 text-slate-950'
-                  : 'bg-slate-900 border-slate-700 text-white'
-              }`}
-            />
+            <div className="relative mt-1">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-amber-400">
+                $
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={actualPaidInput}
+                onChange={(e) => setActualPaidInput(formatLiveCOPInput(e.target.value))}
+                placeholder={`Ej: ${formatLiveCOPInput(String(expectedNetFromCompany))}`}
+                className={`w-full rounded-xl pl-7 pr-3 py-2 text-base font-black font-mono border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                  highContrastSun
+                    ? 'bg-white border-slate-300 text-slate-950'
+                    : 'bg-slate-900 border-slate-700 text-white'
+                }`}
+              />
+            </div>
 
             <div className="grid grid-cols-2 gap-1.5 mt-2">
               <div>
@@ -1035,15 +1086,20 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
                 <label className="text-[11px] font-bold text-slate-400 block mb-1">
                   VALOR ($ COP) *
                 </label>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  required
-                  value={discountAmount}
-                  onChange={(e) => setDiscountAmount(e.target.value)}
-                  placeholder="50000"
-                  className="w-full rounded-xl px-3 py-2 text-xs font-bold font-mono bg-slate-950 border border-slate-700 text-white"
-                />
+                <div className="relative">
+                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-emerald-400">
+                    $
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    value={discountAmount}
+                    onChange={(e) => setDiscountAmount(formatLiveCOPInput(e.target.value))}
+                    placeholder="50.000"
+                    className="w-full rounded-xl pl-6 pr-3 py-2 text-xs font-bold font-mono bg-slate-950 border border-slate-700 text-white"
+                  />
+                </div>
               </div>
               <div>
                 <label className="text-[11px] font-bold text-slate-400 block mb-1">

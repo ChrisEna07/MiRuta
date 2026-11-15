@@ -9,11 +9,17 @@ import {
   ShieldCheck,
   Pencil,
   Check,
-  X
+  X,
+  Cloud,
+  Loader2,
+  Database,
 } from 'lucide-react';
 import { BIBLE_VERSES, type BibleVerse } from '../data/verses';
 import { getDefaultPackageRate, updatePackageRateSetting } from '../db/database';
 import { formatCOP } from '../utils/mediaAndFeedback';
+import { formatLiveCOPInput, parseLiveCOPInput } from '../utils/formatters';
+import { useCloudSyncStatus, syncToSupabase } from '../services/supabaseSync';
+import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface DynamicHeaderProps {
   highContrastSun: boolean;
@@ -22,8 +28,12 @@ interface DynamicHeaderProps {
 
 export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
   highContrastSun,
-  onToggleContrast
+  onToggleContrast,
 }) => {
+  const toast = useToast();
+  const { confirm } = useConfirm();
+  const cloudSync = useCloudSyncStatus();
+
   const [isOnline, setIsOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
@@ -37,7 +47,9 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
   // Estado de Tarifa Dinámica
   const [currentRate, setCurrentRate] = useState<number>(() => getDefaultPackageRate());
   const [showRateModal, setShowRateModal] = useState<boolean>(false);
-  const [tempRateInput, setTempRateInput] = useState<string>(() => String(getDefaultPackageRate()));
+  const [tempRateInput, setTempRateInput] = useState<string>(() =>
+    formatLiveCOPInput(String(getDefaultPackageRate()))
+  );
 
   useEffect(() => {
     const updateGreeting = () => {
@@ -76,10 +88,33 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
   };
 
   const handleApplyNewRate = async (recalculateCurrentShift: boolean) => {
-    const parsed = parseInt(tempRateInput.replace(/\D/g, ''), 10) || 2200;
+    const parsed = parseLiveCOPInput(tempRateInput);
+    if (parsed <= 0) {
+      toast.error('⚠️ Ingresa una tarifa válida mayor a $0 COP');
+      return;
+    }
+
+    if (parsed < 500 || parsed > 50000) {
+      const accepted = await confirm({
+        title: '¿Confirmar tarifa inusual?',
+        description: `Estás configurando ${formatCOP(parsed)} COP por paquete entregado. El rango habitual está entre $500 y $50.000 COP.`,
+        confirmLabel: 'Sí, aplicar tarifa',
+        cancelLabel: 'Corregir valor',
+        variant: 'warning',
+      });
+      if (!accepted) return;
+    }
+
     await updatePackageRateSetting(parsed, recalculateCurrentShift);
     setCurrentRate(getDefaultPackageRate());
     setShowRateModal(false);
+    toast.success(
+      `✅ Tarifa actualizada a ${formatCOP(parsed)} COP`,
+      recalculateCurrentShift
+        ? 'Se recalcularon los paquetes de la jornada actual.'
+        : 'Aplica para los próximos paquetes escaneados.'
+    );
+    syncToSupabase(true).catch(() => {});
   };
 
   return (
@@ -92,7 +127,7 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
         } sticky top-0 z-30 backdrop-blur-md`}
       >
         <div className="max-w-lg mx-auto px-4 py-2.5">
-          {/* Top Row: Brand MR + Live Network Status + Sun/Dark Mode */}
+          {/* Top Row: Brand MR + Live Network & Cloud Sync Status + Sun/Dark Mode */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 via-indigo-600 to-emerald-600 flex items-center justify-center text-white font-black text-sm shadow-md shadow-blue-600/30 shrink-0 border border-white/15">
@@ -108,20 +143,20 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
                   </span>
                 </div>
 
-                <div className="flex items-center gap-1.5 mt-1">
+                <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                   <button
                     type="button"
                     onClick={() => {
-                      setTempRateInput(String(currentRate));
+                      setTempRateInput(formatLiveCOPInput(String(currentRate)));
                       setShowRateModal(true);
                     }}
-                    className={`text-[11px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition-colors ${
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition-colors ${
                       highContrastSun
                         ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
                         : 'bg-slate-800/90 border-slate-700 text-emerald-300 hover:bg-slate-800'
                     }`}
                   >
-                    <span>Tarifa {formatCOP(currentRate)} COP</span>
+                    <span>Tarifa {formatCOP(currentRate)}</span>
                     <Pencil className="w-2.5 h-2.5 text-amber-400" />
                   </button>
                 </div>
@@ -129,23 +164,36 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0">
-              {/* Live Network Indicator Badge */}
+              {/* Live Cloud Sync & Offline Status Pill */}
               <div
-                className={`px-2.5 py-1 rounded-full text-[10px] sm:text-[11px] font-bold flex items-center gap-1 border ${
-                  isOnline
+                className={`px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1.5 border transition-colors ${
+                  cloudSync.state === 'syncing'
+                    ? 'bg-indigo-950/90 border-indigo-500/50 text-indigo-300'
+                    : !isOnline || cloudSync.state === 'offline_pending'
                     ? highContrastSun
-                      ? 'bg-emerald-100 border-emerald-500 text-emerald-900'
-                      : 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
+                      ? 'bg-amber-100 border-amber-500 text-amber-900'
+                      : 'bg-amber-950/90 border-amber-500/50 text-amber-300'
                     : highContrastSun
-                    ? 'bg-amber-100 border-amber-500 text-amber-900'
-                    : 'bg-amber-950/90 border-amber-500/50 text-amber-300'
+                    ? 'bg-emerald-100 border-emerald-500 text-emerald-900'
+                    : 'bg-emerald-950/80 border-emerald-500/40 text-emerald-300'
                 }`}
               >
-                <span>
-                  {isOnline
-                    ? '🟢 Online (Enrutador GPS Activo)'
-                    : '⚡ Modo Offline (Base Local Activa)'}
-                </span>
+                {cloudSync.state === 'syncing' ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin text-indigo-400 shrink-0" />
+                    <span>🔄 Subiendo a Supabase...</span>
+                  </>
+                ) : !isOnline || cloudSync.state === 'offline_pending' ? (
+                  <>
+                    <Database className="w-3 h-3 text-amber-400 shrink-0" />
+                    <span>📦 Local (Pendiente nube)</span>
+                  </>
+                ) : (
+                  <>
+                    <Cloud className="w-3 h-3 text-emerald-400 shrink-0" />
+                    <span>☁️ {cloudSync.relativeTimeLabel}</span>
+                  </>
+                )}
               </div>
 
               {/* Sun / Dark Mode Toggle */}
@@ -254,27 +302,32 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
               <label className="text-xs font-bold text-slate-400 block mb-1">
                 NUEVO VALOR POR PAQUETE ENTREGADO ($ COP)
               </label>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={tempRateInput}
-                onChange={(e) => setTempRateInput(e.target.value)}
-                className={`w-full rounded-xl px-3.5 py-2.5 text-lg font-black font-mono border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  highContrastSun
-                    ? 'bg-slate-50 border-slate-300 text-slate-950'
-                    : 'bg-slate-950 border-slate-700 text-white'
-                }`}
-                placeholder="2200"
-              />
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-black text-emerald-400">
+                  $
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={tempRateInput}
+                  onChange={(e) => setTempRateInput(formatLiveCOPInput(e.target.value))}
+                  className={`w-full rounded-xl pl-8 pr-3.5 py-2.5 text-lg font-black font-mono border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    highContrastSun
+                      ? 'bg-slate-50 border-slate-300 text-slate-950'
+                      : 'bg-slate-950 border-slate-700 text-white'
+                  }`}
+                  placeholder="2.200"
+                />
+              </div>
               <div className="flex gap-1.5 mt-2">
                 {[2000, 2200, 2500, 2800, 3000].map((preset) => (
                   <button
                     key={preset}
                     type="button"
-                    onClick={() => setTempRateInput(String(preset))}
+                    onClick={() => setTempRateInput(formatLiveCOPInput(String(preset)))}
                     className="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700"
                   >
-                    ${preset}
+                    ${preset.toLocaleString('es-CO')}
                   </button>
                 ))}
               </div>
@@ -283,7 +336,7 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
             <p className="text-xs text-slate-400 leading-relaxed">
               ¿Cómo deseas aplicar la nueva tarifa de{' '}
               <strong className="text-emerald-400">
-                {formatCOP(parseInt(tempRateInput || '0', 10) || 2200)} COP
+                {formatCOP(parseLiveCOPInput(tempRateInput) || 2200)} COP
               </strong>
               ?
             </p>
@@ -292,7 +345,7 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
               <button
                 type="button"
                 onClick={() => handleApplyNewRate(false)}
-                className="w-full py-3 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg"
+                className="w-full py-3 px-4 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
               >
                 <Check className="w-4 h-4" />
                 <span>APLICAR SOLO A NUEVOS PAQUETES A PARTIR DE AHORA</span>
@@ -301,7 +354,7 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
               <button
                 type="button"
                 onClick={() => handleApplyNewRate(true)}
-                className="w-full py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg"
+                className="w-full py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all"
               >
                 <RefreshCw className="w-4 h-4" />
                 <span>RECALCULAR TAMBIÉN LOS PAQUETES DE LA JORNADA ACTUAL</span>

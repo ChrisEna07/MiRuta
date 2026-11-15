@@ -11,7 +11,8 @@ import {
   AlertTriangle,
   Trash2,
   RotateCcw,
-  Plus
+  Plus,
+  Loader2
 } from 'lucide-react';
 import { db, type DeliveryPackage } from '../db/database';
 import { detectSameBlockClusters } from '../utils/addressParser';
@@ -23,6 +24,7 @@ import {
   type SweepDirection
 } from '../utils/routeOptimizer';
 import { seedMedellinDemoBatch } from '../utils/demoSeeder';
+import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface RouteOptimizerViewProps {
   packages: DeliveryPackage[];
@@ -35,11 +37,14 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   highContrastSun,
   onOpenScanner
 }) => {
+  const toast = useToast();
+  const { confirm } = useConfirm();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sweepDirection, setSweepDirection] = useState<SweepDirection>('snake');
   const [primaryAxis, setPrimaryAxis] = useState<'CR' | 'CL'>('CR');
   const [optimizingStatus, setOptimizingStatus] = useState<string>('');
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
+  const [optimizeReady, setOptimizeReady] = useState<boolean>(false);
 
   const unarchivedPackages = packages.filter((p) => !p.archivedInHistory);
 
@@ -59,9 +64,12 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
       const sorted = sortPackagesOfflineSnake(packages, sweepDirection, primaryAxis);
       await persistRouteOrder(sorted);
       setOptimizingStatus('✅ ¡Ruta optimizada por nomenclatura Calle/Carrera y guardada en IndexedDB!');
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate([50, 30, 70]);
-      }
+      setOptimizeReady(true);
+      toast.success(
+        '🐍 Ruta optimizada por Nomenclatura Medellín',
+        `Secuencia de ${sorted.length} paradas ordenada en IndexedDB.`
+      );
+      setTimeout(() => setOptimizeReady(false), 1500);
     } finally {
       setIsOptimizing(false);
       setTimeout(() => setOptimizingStatus(''), 4000);
@@ -106,9 +114,12 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
       setOptimizingStatus(
         '✅ ¡Secuencia GPS + TSP 2-opt fijada en IndexedDB! Lista para usar incluso sin señal.'
       );
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate([60, 40, 100]);
-      }
+      setOptimizeReady(true);
+      toast.success(
+        '⚡ Ruta óptima GPS + TSP 2-opt calculada',
+        `${tspOrdered.length} paquetes ordenados por menor distancia.`
+      );
+      setTimeout(() => setOptimizeReady(false), 1500);
     } catch {
       await handleOfflineOptimize();
     } finally {
@@ -137,9 +148,7 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
     const others = active.filter((p) => p.id !== pkg.id);
     const completed = orderedPackages.filter((p) => p.status !== 'pending' && p.status !== 'in_progress');
     await persistRouteOrder([pkg, ...others, ...completed]);
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      navigator.vibrate(50);
-    }
+    toast.info(`🎯 Guía #${pkg.lastFourDigits} fijada como siguiente parada`, pkg.rawAddress);
   };
 
   const handleReopenPackage = async (pkg: DeliveryPackage) => {
@@ -149,12 +158,21 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
       deliveredAt: undefined,
       issueNote: ''
     });
+    toast.info(`🔄 Guía #${pkg.lastFourDigits} devuelta a pendientes`);
   };
 
   const handleDeletePackage = async (pkg: DeliveryPackage) => {
     if (pkg.id === undefined) return;
-    if (window.confirm(`¿Eliminar guía #${pkg.lastFourDigits} (${pkg.rawAddress})?`)) {
+    const accepted = await confirm({
+      title: `¿Eliminar guía #${pkg.lastFourDigits}?`,
+      description: `Se eliminará de tu ruta actual el paquete hacia ${pkg.rawAddress} (${pkg.recipientName}).`,
+      confirmLabel: '🗑️ Sí, eliminar paquete',
+      cancelLabel: 'Cancelar',
+      variant: 'danger',
+    });
+    if (accepted) {
       await db.packages.delete(pkg.id);
+      toast.info(`🗑️ Guía #${pkg.lastFourDigits} eliminada`);
     }
   };
 
@@ -204,10 +222,24 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
           type="button"
           disabled={isOptimizing || packages.length === 0}
           onClick={handleSmartHybridOptimize}
-          className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xl shadow-blue-600/30 active:scale-[0.99] transition-transform"
+          className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xl shadow-blue-600/30 active:scale-[0.99] transition-all"
         >
-          <Zap className="w-5 h-5 text-amber-300 fill-amber-300 shrink-0" />
-          <span>⚡ OPTIMIZAR ORDEN DE ENTREGA (HÍBRIDO GPS / NOMENCLATURA)</span>
+          {isOptimizing ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin text-amber-300 shrink-0" />
+              <span>CALCULANDO RUTA ÓPTIMA...</span>
+            </>
+          ) : optimizeReady ? (
+            <>
+              <CheckCircle2 className="w-5 h-5 text-emerald-300 shrink-0" />
+              <span>✅ ¡LISTO! RUTA OPTIMIZADA</span>
+            </>
+          ) : (
+            <>
+              <Zap className="w-5 h-5 text-amber-300 fill-amber-300 shrink-0" />
+              <span>⚡ OPTIMIZAR ORDEN DE ENTREGA (HÍBRIDO GPS / NOMENCLATURA)</span>
+            </>
+          )}
         </button>
 
         {/* Controles Nivel 1: Barrido Serpiente Offline por Carrera/Calle */}
