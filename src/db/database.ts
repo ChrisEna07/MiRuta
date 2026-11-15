@@ -16,6 +16,7 @@ export interface ParsedMedellinAddress {
 }
 
 export type PackageStatus = 'pending' | 'in_progress' | 'delivered' | 'issue';
+export type PackagePackageSize = 'small' | 'medium' | 'large';
 
 export interface DeliveryPackage {
   id?: number;
@@ -40,6 +41,9 @@ export interface DeliveryPackage {
   deliveredAt?: number;         // timestamp ms
   archivedInHistory?: boolean;
   isTestData?: boolean;
+  packageSize?: PackagePackageSize; // 'small' | 'medium' | 'large'
+  batchNumber?: number;         // Número de Tanda / Escala de Moto (1, 2, 3...)
+  isIsolatedOutlier?: boolean;  // Marcador si queda a > 20 cuadras del núcleo
 }
 
 export type ShiftStatus = 'active' | 'paused' | 'closed';
@@ -185,6 +189,22 @@ export class MiRutaDB extends Dexie {
 export const db = new MiRutaDB();
 
 const RATE_STORAGE_KEY = 'miruta_default_package_rate_cop';
+const MOTO_CAPACITY_STORAGE_KEY = 'miruta_moto_capacity_max_pkgs';
+
+export function getMaxMotorcycleCapacity(): number {
+  if (typeof window === 'undefined') return 15;
+  const raw = localStorage.getItem(MOTO_CAPACITY_STORAGE_KEY);
+  const parsed = raw ? parseInt(raw, 10) : 15;
+  return parsed > 0 && parsed <= 50 ? parsed : 15;
+}
+
+export function updateMaxMotorcycleCapacity(newCapacity: number): void {
+  const clean = Math.min(50, Math.max(5, Math.round(newCapacity || 15)));
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(MOTO_CAPACITY_STORAGE_KEY, String(clean));
+    window.dispatchEvent(new CustomEvent('miruta-moto-capacity-updated', { detail: clean }));
+  }
+}
 
 export function getDefaultPackageRate(): number {
   if (typeof window === 'undefined') return 2200;

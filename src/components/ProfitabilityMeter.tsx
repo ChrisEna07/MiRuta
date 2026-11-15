@@ -177,46 +177,44 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
       };
     }
 
-    if (packagesPerHour >= 7 || netProfitPerHour > 12500) {
+    if (packagesPerHour >= 10 || netProfitPerHour > 18000) {
       return {
         level: 'green',
-        badge: '🟢 RITMO ÓPTIMO',
+        badge: '🟢 RITMO ÓPTIMO (10+ PAQ/H)',
         badgeBg: 'bg-emerald-600 text-white',
         bgClass: highContrastSun
           ? 'bg-emerald-100 border-emerald-600 text-emerald-950'
           : 'bg-emerald-950/60 border-emerald-500/50 text-emerald-200',
         message:
-          '🔥 ¡Ritmo excelente! El sector es denso y estás entregando cada ~8 min o menos. A este paso la jornada es totalmente rentable.'
+          '🔥 ¡Ritmo impecable! Estás entregando a más de 10 paquetes por hora (~6 min o menos por entrega). A este ritmo aseguras la meta quincenal de $600.000 COP con máxima eficiencia de gasolina.'
       };
     }
 
     if (
-      (packagesPerHour >= 4.5 && packagesPerHour < 7) ||
-      (netProfitPerHour >= 7500 && netProfitPerHour <= 12500) ||
+      (packagesPerHour >= 6 && packagesPerHour < 10) ||
+      (netProfitPerHour >= 10000 && netProfitPerHour <= 18000) ||
       activeHours < 1
     ) {
       return {
         level: 'yellow',
-        badge: '🟡 RITMO AJUSTADO',
+        badge: '🟡 RITMO AJUSTADO (6 - 10 PAQ/H)',
         badgeBg: 'bg-amber-500 text-slate-950',
         bgClass: highContrastSun
           ? 'bg-amber-100 border-amber-600 text-amber-950'
           : 'bg-amber-950/60 border-amber-500/50 text-amber-200',
         message:
-          '⚡ Cuidado con los tiempos muertos. Usa el botón de Pre-aviso por WhatsApp antes de moverte al siguiente punto para no perder tiempo en las puertas.'
+          '⚡ Ritmo en rango aceptable, pero ajustado. Usa el pre-aviso por WhatsApp para que los clientes salgan rápido a la puerta y evitar saltos largos entre cuadras.'
       };
     }
 
     return {
       level: 'red',
-      badge: '🔴 ZONA / RITMO NO RENTABLE',
+      badge: '🔴 RITMO BAJO (< 6 PAQ/H)',
       badgeBg: 'bg-rose-600 text-white',
       bgClass: highContrastSun
         ? 'bg-rose-100 border-rose-600 text-rose-950'
         : 'bg-rose-950/70 border-rose-500/60 text-rose-200',
-      message: `🚨 Alerta de rentabilidad: Estás tardando más de 13 min por paquete. A ${formatCOP(
-        defaultRate
-      )} c/u, la gasolina y las lomas/distancias de este sector están comiéndose tu ganancia. Evalúa renegociar tarifa/sector con el Sr. Juan.`
+      message: `🚨 Alerta de rentabilidad: Promedio por debajo de 6 paquetes/hora (>10 min por entrega). La meta quincenal requiere mantener 10 paq/hora. Revisa si hay paquetes aislados que debas pasar a otra tanda para no quemar tiempo en desvíos.`
     };
   };
 
@@ -531,6 +529,20 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
                     </span>
                   </div>
                 </div>
+              </div>
+
+              {/* Métrica de Eficiencia de Tandas y Meta Quincenal ($600k COP) */}
+              <div className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 flex items-center justify-between text-xs font-bold gap-2 flex-wrap">
+                <span className="text-slate-400 flex items-center gap-1.5">
+                  <span>🛵 Promedio Tanda:</span>
+                  <strong className="text-emerald-400">
+                    {deliveredCount > 0 ? `~${Math.max(12, Math.round(avgMinutesPerPackage * 12))} min` : '15 min'}
+                  </strong>
+                  <span>• {deliveredCount} paqs entregados • 0 desvíos</span>
+                </span>
+                <span className="text-amber-400 font-mono">
+                  🎯 Meta Quincena: $600.000 COP
+                </span>
               </div>
 
               {/* Semáforo Diagnóstico Automatizado */}

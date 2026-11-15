@@ -28,6 +28,8 @@ import {
   db,
   getDefaultPackageRate,
   updatePackageRateSetting,
+  getMaxMotorcycleCapacity,
+  updateMaxMotorcycleCapacity,
   createBackupSnapshot,
   wipeOperationalDatabaseWithMandatoryBackup,
   wipeOperationalDatabaseDirectWithoutBackup,
@@ -83,6 +85,9 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   const [rateInput, setRateInput] = useState<string>(() =>
     formatLiveCOPInput(String(getDefaultPackageRate()))
   );
+  const [motoCapacityInput, setMotoCapacityInput] = useState<number>(() =>
+    getMaxMotorcycleCapacity()
+  );
 
   // Estado para crear Punto de Restauración manual
   const [customSessionName, setCustomSessionName] = useState<string>('');
@@ -127,6 +132,7 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
 
   useEffect(() => {
     const syncRate = () => setRateInput(formatLiveCOPInput(String(getDefaultPackageRate())));
+    const syncCapacity = () => setMotoCapacityInput(getMaxMotorcycleCapacity());
     const syncQuota = () => {
       setQuotaSnapshot(getQuotaGuardrailSnapshot());
       setVisionCfg(getSmartVisionConfig());
@@ -139,10 +145,12 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
 
     syncLearning();
     window.addEventListener('miruta-rate-updated', syncRate);
+    window.addEventListener('miruta-moto-capacity-updated', syncCapacity);
     window.addEventListener('miruta-quota-updated', syncQuota);
     window.addEventListener('miruta-learning-updated', syncLearning);
     return () => {
       window.removeEventListener('miruta-rate-updated', syncRate);
+      window.removeEventListener('miruta-moto-capacity-updated', syncCapacity);
       window.removeEventListener('miruta-quota-updated', syncQuota);
       window.removeEventListener('miruta-learning-updated', syncLearning);
     };
@@ -1102,7 +1110,53 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         </button>
       </div>
 
-      {/* 4. CONFIGURACIÓN DE TARIFA DINÁMICA POR PAQUETE */}
+      {/* 4. CONFIGURACIÓN DE CAPACIDAD DE MOTO Y TANDAS (v8.1) */}
+      <div
+        className={`rounded-3xl border p-4 shadow-lg space-y-3 ${
+          highContrastSun
+            ? 'bg-white border-slate-300 text-slate-950'
+            : 'bg-slate-900/95 border-slate-800 text-slate-50'
+        }`}
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="p-2.5 rounded-2xl bg-amber-500 text-slate-950 font-black">
+            🛵
+          </div>
+          <div>
+            <h2 className="text-base font-black">
+              Capacidad Máxima de Moto por Tanda (Escalas)
+            </h2>
+            <p className="text-xs text-slate-400">
+              Límite de paquetes por viaje en moto (morral + parrilla). Por defecto: 15 paquetes.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min="5"
+            max="35"
+            step="1"
+            value={motoCapacityInput}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              setMotoCapacityInput(val);
+              updateMaxMotorcycleCapacity(val);
+            }}
+            className="flex-1 accent-amber-500 h-2 bg-slate-800 rounded-lg cursor-pointer"
+          />
+          <span className="px-3.5 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-mono font-black text-sm shrink-0">
+            {motoCapacityInput} paqs / tanda
+          </span>
+        </div>
+
+        <p className="text-[11px] text-slate-400">
+          💡 Cuando escanees más de {motoCapacityInput} paquetes en bodega, MiRuta los agrupará automáticamente en <strong>Tanda 1, Tanda 2, Tanda 3...</strong> por cercanía geográfica estricta.
+        </p>
+      </div>
+
+      {/* 5. CONFIGURACIÓN DE TARIFA DINÁMICA POR PAQUETE */}
       <div
         className={`rounded-3xl border p-4 shadow-lg space-y-3 ${
           highContrastSun

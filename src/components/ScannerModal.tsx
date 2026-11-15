@@ -107,6 +107,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'ready'>('idle');
+  const [packageSize, setPackageSize] = useState<'small' | 'medium' | 'large'>('medium');
 
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const lastDecodedBarcodeRef = useRef<string>('');
@@ -532,6 +533,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     setRecipientPhone(validateAndFormatColombianPhone(pkg.recipientPhone).formatted);
     setRawAddress(pkg.rawAddress);
     setNeighborhood(pkg.parsedAddress?.neighborhood || 'Medellín');
+    setPackageSize(pkg.packageSize || 'medium');
     toast.info(
       `✏️ Editando guía #${pkg.lastFourDigits}`,
       'Actualiza los datos y guarda sin duplicar el paquete.'
@@ -603,6 +605,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
             recipientPhone: normalizeColombianPhone(recipientPhone),
             rawAddress: rawAddress.trim(),
             parsedAddress: parsedAddr,
+            packageSize: packageSize,
           };
           updatedPkg.coordinates = estimateMedellinCoordinatesFromAddress(updatedPkg);
           await db.packages.put(updatedPkg);
@@ -630,6 +633,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           shiftId,
           scannedAt: Date.now(),
           archivedInHistory: false,
+          packageSize: packageSize,
         };
         newPkg.coordinates = estimateMedellinCoordinatesFromAddress(newPkg);
 
@@ -666,6 +670,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setRecipientName('');
       setRecipientPhone('');
       setRawAddress('');
+      setPackageSize('medium');
       setSmartBlockText('');
       setCapturedLabelThumb('');
       setAutoFilledFields({});
@@ -1297,6 +1302,53 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                   : 'bg-slate-950 border-slate-700 text-white'
               }`}
             />
+          </div>
+
+          {/* 6. Tamaño / Volumen en Moto (Filtro para Tandas de Carga v8.1) */}
+          <div>
+            <label className="block text-[11px] font-bold text-slate-400 mb-1">
+              🛵 TAMAÑO / VOLUMEN EN MOTO (CAPACIDAD)
+            </label>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPackageSize('small')}
+                className={`py-2 px-2 rounded-xl text-xs font-black border transition-all flex flex-col items-center justify-center gap-0.5 ${
+                  packageSize === 'small'
+                    ? 'bg-blue-600 text-white border-blue-400 shadow-md'
+                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                <span>🎒 Pequeño</span>
+                <span className="text-[9px] font-normal opacity-80">Morral / Bolsillo</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPackageSize('medium')}
+                className={`py-2 px-2 rounded-xl text-xs font-black border transition-all flex flex-col items-center justify-center gap-0.5 ${
+                  packageSize === 'medium'
+                    ? 'bg-emerald-600 text-white border-emerald-400 shadow-md'
+                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                <span>📦 Mediano</span>
+                <span className="text-[9px] font-normal opacity-80">Tanda Normal</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPackageSize('large')}
+                className={`py-2 px-2 rounded-xl text-xs font-black border transition-all flex flex-col items-center justify-center gap-0.5 ${
+                  packageSize === 'large'
+                    ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md'
+                    : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                <span>⚠️ Bulto Grande</span>
+                <span className="text-[9px] font-black opacity-90">1ra Tanda Prioritaria</span>
+              </button>
+            </div>
           </div>
 
           {/* Botón Único Principal Gigante e Imponente (1-Touch Flow Modo Bala) + Enlace Sutil Secundario */}
