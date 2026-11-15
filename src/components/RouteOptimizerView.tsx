@@ -31,6 +31,7 @@ import {
   solveTSPNearestNeighbor2Opt,
   geocodeMedellinAddress,
   persistRouteOrder,
+  getCurrentMotorcycleGPS,
   type SweepDirection,
 } from '../utils/routeOptimizer';
 import {
@@ -85,22 +86,25 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   });
 
   const sameBlockAlerts = detectSameBlockClusters(unarchivedPackages);
+  const issuePackages = unarchivedPackages.filter((p) => p.status === 'issue');
 
-  // Optimización Híbrida con Distribución Automática de Tandas en Moto
+  // Optimización Híbrida con Distribución Automática de Tandas en Moto y GPS real
   const handleAutoBatchOptimize = async () => {
     setIsOptimizing(true);
-    setOptimizingStatus('Agrupando en tandas compactas para moto (< 20 cuadras)...');
+    setOptimizingStatus('Obteniendo GPS de la moto para iniciar desde el punto más cercano...');
     try {
-      const result = partitionPackagesIntoMotorcycleBatches(unarchivedPackages, maxCapacity);
+      const liveGPS = await getCurrentMotorcycleGPS(3000);
+      setOptimizingStatus('Agrupando en tandas compactas para moto (< 20 cuadras)...');
+      const result = partitionPackagesIntoMotorcycleBatches(unarchivedPackages, maxCapacity, liveGPS);
       await persistMotorcycleBatches(result.batches);
 
       setOptimizingStatus(
-        `✅ ¡${result.totalBatches} tandas organizadas! Capacidad máx: ${maxCapacity} paqs/tanda.`
+        `✅ ¡${result.totalBatches} tandas organizadas desde tu GPS! Capacidad máx: ${maxCapacity} paqs/tanda.`
       );
       setOptimizeReady(true);
       toast.success(
         `🛵 ${result.totalBatches} Tandas de Moto Calculadas`,
-        `Rutas compactas por sector • ${result.isolatedPackages.length} alertas de paquetes aislados.`
+        `Iniciando en tu ubicación real • ${result.isolatedPackages.length} alertas de paquetes aislados.`
       );
       setTimeout(() => setOptimizeReady(false), 2000);
     } catch {
@@ -109,6 +113,23 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
       setIsOptimizing(false);
       setTimeout(() => setOptimizingStatus(''), 4500);
     }
+  };
+
+  const handleRetryNoveltyPackage = async (pkg: DeliveryPackage) => {
+    if (pkg.id === undefined) return;
+    const targetBatch = selectedBatchFilter !== 'all' ? selectedBatchFilter : (pkg.batchNumber || 1);
+    await db.packages.update(pkg.id, {
+      status: 'pending',
+      batchNumber: targetBatch,
+      deliveredAt: undefined,
+      arrivedAtPointAt: undefined,
+      issueNote: pkg.issueNote ? `[Reintento] ${pkg.issueNote}` : undefined,
+      archivedInHistory: false,
+    });
+    toast.success(
+      `🔄 Paquete #${pkg.lastFourDigits} Reincorporado a la Ruta`,
+      `Reasignado a Tanda ${targetBatch} listo para entregar.`
+    );
   };
 
   const handleFinishCurrentBatch = async (batchNum: number) => {
@@ -428,6 +449,64 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
         </div>
       )}
 
+      {/* SECCIÓN DESTACADA: PAQUETES CON NOVEDAD / PENDIENTES DE REINTENTO (v9.5) */}
+      {issuePackages.length > 0 && (
+        <div className="p-3.5 rounded-3xl bg-rose-950/40 border-2 border-rose-500/70 shadow-xl space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="p-1.5 rounded-xl bg-rose-500 text-white font-black">
+                <AlertTriangle className="w-4 h-4" />
+              </span>
+              <div>
+                <h3 className="text-xs sm:text-sm font-black text-rose-200">
+                  📦 Paquetes con Novedad / Reintento ({issuePackages.length})
+                </h3>
+                <p className="text-[10px] text-rose-300/80">
+                  Reintenta entregarlos hoy mismo sin volver a escanear
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            {issuePackages.map((pkg) => (
+              <div
+                key={pkg.id}
+                className="p-3 rounded-2xl bg-slate-900 border border-rose-500/40 flex items-center justify-between gap-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base font-black font-mono text-amber-400">
+                      #{pkg.lastFourDigits}
+                    </span>
+                    <span className="text-xs font-bold text-white truncate">
+                      {pkg.rawAddress}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 truncate">
+                    👤 {pkg.recipientName} • {pkg.parsedAddress?.neighborhood || 'Medellín'}
+                  </p>
+                  {pkg.issueNote && (
+                    <p className="text-[10px] font-semibold text-rose-400">
+                      Motivo: {pkg.issueNote}
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleRetryNoveltyPackage(pkg)}
+                  className="py-2 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-md active:scale-95 shrink-0 cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4 shrink-0" />
+                  <span>🔄 Reintentar / Reasignar a Ruta</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Lista de Paquetes de la Jornada */}
       {filtered.length === 0 ? (
         <div
@@ -522,6 +601,18 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
 
                       {/* Botón directo de navegación Waze por parada */}
                       <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                        {pkg.status === 'issue' && (
+                          <button
+                            type="button"
+                            onClick={() => handleRetryNoveltyPackage(pkg)}
+                            className="py-1 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] flex items-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer"
+                            title="Reintentar / Reasignar a Ruta"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                            <span>🔄 Reintentar en Ruta</span>
+                          </button>
+                        )}
+
                         <button
                           type="button"
                           onClick={() => openWazeNavigation(pkg.rawAddress, pkg.coordinates)}

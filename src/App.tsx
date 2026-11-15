@@ -41,8 +41,19 @@ export function App() {
   useEffect(() => {
     const initApp = async () => {
       await ensureShiftExists(todayShiftId);
+      // Rehidratación inmediata (v9.5): Garantiza que paquetes activos no archivados permanezcan visibles
+      const allPkgs = await db.packages.toArray();
+      const unarchivedActive = allPkgs.filter(
+        (p) => !p.archivedInHistory && (p.status === 'pending' || p.status === 'in_progress' || p.status === 'issue')
+      );
+      for (const pkg of unarchivedActive) {
+        if (pkg.shiftId !== todayShiftId && pkg.id !== undefined) {
+          await db.packages.update(pkg.id, { shiftId: todayShiftId });
+        }
+      }
+
       const alreadySeeded = localStorage.getItem('miruta_initial_seed_v2');
-      if (!alreadySeeded) {
+      if (!alreadySeeded && allPkgs.length === 0) {
         await seedMedellinDemoBatch();
         localStorage.setItem('miruta_initial_seed_v2', 'true');
       }
@@ -51,10 +62,12 @@ export function App() {
   }, [todayShiftId]);
 
   const todayPackages =
-    useLiveQuery(
-      () => db.packages.where('shiftId').equals(todayShiftId).toArray(),
-      [todayShiftId]
-    ) || [];
+    useLiveQuery(async () => {
+      const all = await db.packages.toArray();
+      return all.filter(
+        (p) => !p.archivedInHistory || p.shiftId === todayShiftId
+      );
+    }, [todayShiftId]) || [];
 
   const todayShift = useLiveQuery(
     () => db.shifts.get(todayShiftId),

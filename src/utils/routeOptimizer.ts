@@ -124,27 +124,63 @@ export function haversineDistanceKm(
 }
 
 /**
+ * Centro geográfico de referencia en Medellín Nororiental (Comuna 2 Santa Cruz / Comuna 4 Aranjuez).
+ * Evita saltos de río al Puente Madre Laura hacia Castilla o Robledo.
+ */
+export const MEDELLIN_NORTH_EAST_CENTER = { lat: 6.2885, lng: -75.5580 };
+
+/**
+ * Captura la posición GPS real actual del dispositivo (Moto) con límite de 2.8s
+ * y cae a Medellín Nororiental (Aranjuez/Santa Cruz) si no hay señal.
+ */
+export function getCurrentMotorcycleGPS(timeoutMs = 2800): Promise<{ lat: number; lng: number }> {
+  return new Promise((resolve) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      resolve(MEDELLIN_NORTH_EAST_CENTER);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          lat: Number(pos.coords.latitude.toFixed(6)),
+          lng: Number(pos.coords.longitude.toFixed(6))
+        });
+      },
+      () => {
+        resolve(MEDELLIN_NORTH_EAST_CENTER);
+      },
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
+    );
+  });
+}
+
+/**
  * Aproximación de coordenadas en el Valle de Aburrá (Medellín) basada en nomenclatura Calle/Carrera
  * cuando un paquete aún no tiene coordenadas GPS o Nominatim no encuentra una placa específica.
- * Centro de referencia en Medellín: Calle 50 (Colombia) con Carrera 50 (Palacé) -> 6.2518, -75.5683
+ * Blindado para zona Nororiental (Comunas 2 y 4): previene saltar al oeste del Río Medellín.
  */
 export function estimateMedellinCoordinatesFromAddress(pkg: DeliveryPackage): { lat: number; lng: number } {
   if (pkg.coordinates && pkg.coordinates.lat && pkg.coordinates.lng) {
     return pkg.coordinates;
   }
   const grid = getGridCoordinates(pkg);
-  // En Medellín:
-  // Cada Calle (~80m) incrementa latitud hacia el Norte (~0.00072 grados por calle)
-  // Cada Carrera (~80m) incrementa longitud hacia el Occidente (~-0.00072 grados por carrera)
-  const baseLat = 6.2115; // Referencia Calle 1
-  const baseLng = -75.5320; // Referencia Carrera 1
-  const calleVal = grid.calleAxis || 50;
-  const carreraVal = grid.carreraAxis || 50;
+  
+  // En Medellín Nororiental:
+  // Base referencia Calle 1: Lat 6.2115, Lng -75.5320
+  const baseLat = 6.2115;
+  const baseLng = -75.5320;
+  const calleVal = grid.calleAxis || 90;
+  const carreraVal = grid.carreraAxis || 45;
   const plateOffset = (grid.plate || 20) / 100;
 
+  const estimatedLat = Number((baseLat + (calleVal + plateOffset * 0.5) * 0.00075).toFixed(6));
+  // Limitar longitud para no cruzar el Río Medellín (-75.5630 es la ribera este a la altura de Aranjuez/Madre Laura)
+  const rawLng = baseLng - (carreraVal + plateOffset * 0.5) * 0.00075;
+  const estimatedLng = Number(Math.max(-75.5628, rawLng).toFixed(6));
+
   return {
-    lat: Number((baseLat + (calleVal + plateOffset * 0.5) * 0.00075).toFixed(6)),
-    lng: Number((baseLng - (carreraVal + plateOffset * 0.5) * 0.00075).toFixed(6))
+    lat: estimatedLat,
+    lng: estimatedLng
   };
 }
 

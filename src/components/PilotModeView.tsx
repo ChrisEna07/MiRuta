@@ -35,6 +35,7 @@ import {
   playCashRegisterSuccess,
   compressProofPhotoToBase64,
   buildWhatsAppPreNoticeUrl,
+  buildArrivalWhatsAppUrl,
   buildNavigationLinks,
   openWazeNavigation,
   formatCOP
@@ -61,6 +62,7 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
   const [issueReason, setIssueReason] = useState<string>('Cliente no contesta tras 5 min');
   const [uploadingPhoto, setUploadingPhoto] = useState<boolean>(false);
   const [nextClientAlertPkg, setNextClientAlertPkg] = useState<DeliveryPackage | null>(null);
+  const [showArrivalActions, setShowArrivalActions] = useState<boolean>(false);
 
   // Control de Jornada v8.6 (Inicio, Pausas Inteligentes y Cierre)
   const todayShiftId = getTodayShiftId();
@@ -226,6 +228,22 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
     if (typeof navigator !== 'undefined' && navigator.vibrate) {
       navigator.vibrate(50);
     }
+  };
+
+  const handleArrivedAtPoint = async () => {
+    if (!currentPkg || currentPkg.id === undefined) return;
+    await activateShiftIfWaiting();
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([60, 40, 60]);
+    }
+    if (!currentPkg.arrivedAtPointAt) {
+      await db.packages.update(currentPkg.id, {
+        status: 'in_progress',
+        arrivedAtPointAt: Date.now()
+      });
+      toast.info('⏱️ Cronómetro de Puerta Iniciado', 'Límite sugerido: 3 minutos.');
+    }
+    setShowArrivalActions((prev) => !prev);
   };
 
   const handleResetDoorTimer = async () => {
@@ -770,16 +788,95 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           </div>
         </div>
 
-        {/* Lanzador Directo de Navegación: Waze Gigante 1-Click + Maps */}
+        {/* Lanzador Directo de Navegación y Llegada: Waze + "Ya estoy acá" (v9.5) */}
         <div className="mt-3.5 space-y-2">
-          <button
-            type="button"
-            onClick={() => openWazeNavigation(currentPkg.rawAddress, currentPkg.coordinates)}
-            className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-sky-500 via-sky-400 to-cyan-400 hover:from-sky-400 hover:to-cyan-300 text-slate-950 font-black text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl shadow-sky-500/25 active:scale-[0.98] transition-all cursor-pointer border-2 border-sky-200"
-          >
-            <Navigation className="w-5 h-5 fill-slate-950 shrink-0" />
-            <span>🧭 NAVEGAR EN WAZE (1-CLICK)</span>
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => openWazeNavigation(currentPkg.rawAddress, currentPkg.coordinates)}
+              className="w-full py-3.5 px-3 rounded-2xl bg-gradient-to-r from-sky-500 via-sky-400 to-cyan-400 hover:from-sky-400 hover:to-cyan-300 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 active:scale-[0.98] transition-all cursor-pointer border-2 border-sky-200"
+            >
+              <Navigation className="w-5 h-5 fill-slate-950 shrink-0" />
+              <span>🧭 NAVEGAR EN WAZE</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleArrivedAtPoint}
+              className={`w-full py-3.5 px-3 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-xl active:scale-[0.98] transition-all cursor-pointer border-2 ${
+                showArrivalActions || currentPkg.arrivedAtPointAt
+                  ? 'bg-gradient-to-r from-emerald-500 via-green-500 to-teal-400 text-slate-950 border-emerald-300 shadow-emerald-500/30'
+                  : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-green-600 text-white border-emerald-400/80 shadow-emerald-600/30 animate-pulse'
+              }`}
+            >
+              <span className="text-lg">📍</span>
+              <span>YA ESTOY ACÁ</span>
+            </button>
+          </div>
+
+          {/* Menú Rápido de Acciones de Llegada (v9.5) */}
+          {showArrivalActions && (
+            <div className="p-3.5 rounded-2xl bg-slate-950/95 border-2 border-emerald-500 shadow-2xl space-y-2.5 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-emerald-400 flex items-center gap-1.5 uppercase">
+                  <span>📍 Acciones Inmediatas de Llegada</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowArrivalActions(false)}
+                  className="text-xs font-bold text-slate-400 hover:text-white px-2 py-0.5 rounded-lg bg-slate-850 border border-slate-700"
+                >
+                  Cerrar ✕
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <a
+                  href={buildArrivalWhatsAppUrl(currentPkg)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black flex items-center justify-center gap-1.5 text-center shadow-md active:scale-95"
+                >
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span>💬 "Ya Llegué"</span>
+                </a>
+
+                <a
+                  href={currentPkg.recipientPhone ? `tel:+${currentPkg.recipientPhone}` : '#'}
+                  className="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black flex items-center justify-center gap-1.5 text-center shadow-md active:scale-95"
+                >
+                  <PhoneCall className="w-4 h-4 shrink-0" />
+                  <span>📞 Llamar Ahora</span>
+                </a>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowArrivalActions(false);
+                    await handleMarkDelivered();
+                  }}
+                  className="py-3 px-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg active:scale-95 cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>✅ Entregado Ya</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowArrivalActions(false);
+                    setShowIssueModal(true);
+                  }}
+                  className="py-3 px-2 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg active:scale-95 cursor-pointer"
+                >
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>⚠️ Novedad</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-2">
             <a

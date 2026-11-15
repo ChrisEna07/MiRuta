@@ -131,12 +131,40 @@ export function buildWhatsAppPreNoticeUrl(pkg: DeliveryPackage): string {
 }
 
 /**
+ * Enlace de WhatsApp "Ya estoy acá" al llegar a la puerta del cliente.
+ */
+export function buildArrivalWhatsAppUrl(pkg: DeliveryPackage): string {
+  const clientName = pkg.recipientName?.trim() || 'Cliente';
+  const last4 = pkg.lastFourDigits || pkg.trackingNumber.slice(-4);
+  const address = pkg.rawAddress;
+
+  const message = `¡Hola ${clientName}! Ya estoy afuera en tu puerta en *${address}* con tu paquete de Shein/Temu (Guía *#${last4}*). Por favor sal a recibirlo para entregártelo de inmediato. ¡Gracias!`;
+
+  const phone = (pkg.recipientPhone || '').replace(/\D/g, '');
+  const cleanPhone = phone.startsWith('57') ? phone : phone ? `57${phone}` : '';
+
+  if (cleanPhone.length >= 10) {
+    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+  }
+  return `https://wa.me/?text=${encodeURIComponent(message)}`;
+}
+
+/**
+ * Normaliza la dirección para navegación blindando zona y evitando saltos de río al sur o Robledo
+ */
+export function formatNavQueryAddress(address: string, neighborhood?: string): string {
+  let clean = address.trim().replace(/,\s*(Medell[íi]n|Antioquia|Colombia).*$/gi, '');
+  if (neighborhood && !clean.toLowerCase().includes(neighborhood.toLowerCase())) {
+    return `${clean}, ${neighborhood}, Medellín, Antioquia, Colombia`;
+  }
+  return `${clean}, Medellín, Antioquia, Colombia`;
+}
+
+/**
  * Construye enlaces de navegación directa para Waze y Google Maps en Medellín.
  */
 export function buildNavigationLinks(pkg: DeliveryPackage): { wazeUrl: string; googleMapsUrl: string } {
-  const queryAddress = pkg.rawAddress.toLowerCase().includes('medellín') || pkg.rawAddress.toLowerCase().includes('medellin')
-    ? pkg.rawAddress
-    : `${pkg.rawAddress}, Medellín, Antioquia, Colombia`;
+  const queryAddress = formatNavQueryAddress(pkg.rawAddress, pkg.parsedAddress?.neighborhood);
 
   if (pkg.coordinates && pkg.coordinates.lat && pkg.coordinates.lng) {
     const { lat, lng } = pkg.coordinates;
@@ -158,13 +186,12 @@ export function buildNavigationLinks(pkg: DeliveryPackage): { wazeUrl: string; g
  */
 export function openWazeNavigation(
   address: string,
-  coords?: { lat: number; lng: number } | null
+  coords?: { lat: number; lng: number } | null,
+  neighborhood?: string
 ): void {
   if (!address && !coords) return;
 
-  const queryAddress = address.toLowerCase().includes('medellín') || address.toLowerCase().includes('medellin')
-    ? address
-    : `${address}, Medellín, Antioquia, Colombia`;
+  const queryAddress = formatNavQueryAddress(address, neighborhood);
 
   const webUrl = coords?.lat && coords?.lng
     ? `https://waze.com/ul?ll=${coords.lat},${coords.lng}&navigate=yes`

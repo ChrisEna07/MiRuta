@@ -16,7 +16,8 @@ import {
   Calendar,
   Save,
   ExternalLink,
-  ShieldCheck
+  ShieldCheck,
+  RotateCcw
 } from 'lucide-react';
 import { db, type DeliveryPackage, getTodayShiftId } from '../db/database';
 import { compressProofPhotoToBase64, formatCOP } from '../utils/mediaAndFeedback';
@@ -57,6 +58,21 @@ export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = (
     setSelectedPkgId(pkg.id);
     setAuditNoteInput(pkg.auditNote || pkg.issueNote || '');
     setNoteSavedBanner('');
+  };
+
+  const handleRetryIssuePackage = async (pkg: DeliveryPackage) => {
+    if (pkg.id === undefined) return;
+    await db.packages.update(pkg.id, {
+      status: 'pending',
+      issueNote: pkg.issueNote ? `[Reintento] ${pkg.issueNote}` : undefined,
+      archivedInHistory: false,
+      arrivedAtPointAt: undefined
+    });
+    setSelectedPkgId(null);
+    toast.success(
+      `🔄 Guía #${pkg.lastFourDigits} devuelta a la ruta`,
+      'Ya está disponible como pendiente en la pestaña de Ruta y Piloto.'
+    );
   };
 
   // Calcular rango de fechas para el filtro rápido
@@ -685,6 +701,18 @@ export const TraceabilityHistoryView: React.FC<TraceabilityHistoryViewProps> = (
               <Share2 className="w-4 h-4 shrink-0" />
               <span>📤 COMPARTIR PRUEBA DE ENTREGA POR WHATSAPP</span>
             </button>
+
+            {/* Si es paquete con novedad, opción directa de reintentar entrega (v9.5) */}
+            {selectedPkg.status === 'issue' && (
+              <button
+                type="button"
+                onClick={() => handleRetryIssuePackage(selectedPkg)}
+                className="w-full py-3.5 px-4 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xl shadow-amber-500/25 active:scale-95 transition-transform cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4 shrink-0" />
+                <span>🔄 REINTENTAR / REASIGNAR A RUTA</span>
+              </button>
+            )}
           </div>
         </div>
       )}

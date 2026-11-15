@@ -6,7 +6,9 @@ import {
 import {
   estimateMedellinCoordinatesFromAddress,
   haversineDistanceKm,
-  sortPackagesOfflineSnake
+  sortPackagesOfflineSnake,
+  solveTSPNearestNeighbor2Opt,
+  MEDELLIN_NORTH_EAST_CENTER
 } from '../utils/routeOptimizer';
 
 export interface BatchClusterGroup {
@@ -38,6 +40,7 @@ export interface StagingAnalysisResult {
 export function partitionPackagesIntoMotorcycleBatches(
   packages: DeliveryPackage[],
   maxCapacity: number = getMaxMotorcycleCapacity(),
+  originCoords?: { lat: number; lng: number },
   outlierDistanceKm: number = 2.0 // ~20 cuadras en Medellín
 ): StagingAnalysisResult {
   const unarchived = packages.filter((p) => !p.archivedInHistory);
@@ -54,6 +57,8 @@ export function partitionPackagesIntoMotorcycleBatches(
     };
   }
 
+  const startAnchor = originCoords || MEDELLIN_NORTH_EAST_CENTER;
+
   // Asignar coordenadas garantizadas
   const enriched = active.map((pkg) => ({
     ...pkg,
@@ -65,8 +70,8 @@ export function partitionPackagesIntoMotorcycleBatches(
   const normalPackages = enriched.filter((p) => p.packageSize !== 'large');
 
   // Calcular centroide general del sector
-  const avgLat = enriched.reduce((sum, p) => sum + (p.coordinates?.lat || 6.25), 0) / enriched.length;
-  const avgLng = enriched.reduce((sum, p) => sum + (p.coordinates?.lng || -75.56), 0) / enriched.length;
+  const avgLat = enriched.reduce((sum, p) => sum + (p.coordinates?.lat || startAnchor.lat), 0) / enriched.length;
+  const avgLng = enriched.reduce((sum, p) => sum + (p.coordinates?.lng || startAnchor.lng), 0) / enriched.length;
   const centroid = { lat: avgLat, lng: avgLng };
 
   // Detectar paquetes aislados (> outlierDistanceKm del centroide del lote)
@@ -82,18 +87,25 @@ export function partitionPackagesIntoMotorcycleBatches(
     }
   }
 
-  // Armar pool priorizado:
-  // 1. Grandes primero (para la Tanda 1)
-  // 2. Núcleo compacto
-  // 3. Aislados al final (para que no contaminen los lotes principales)
-  const remainingPool = [...largePackages.map(p => ({ ...p, isIsolatedOutlier: false })), ...corePackages, ...isolatedList];
+  // Ordenar pool priorizando cercanía al punto de partida GPS de la moto
+  const normalSortedByOrigin = [...corePackages].sort((a, b) => {
+    const da = haversineDistanceKm(startAnchor, a.coordinates || startAnchor);
+    const db = haversineDistanceKm(startAnchor, b.coordinates || startAnchor);
+    return da - db;
+  });
+
+  const remainingPool = [
+    ...largePackages.map((p) => ({ ...p, isIsolatedOutlier: false })),
+    ...normalSortedByOrigin,
+    ...isolatedList
+  ];
   const batches: BatchClusterGroup[] = [];
   let batchNum = 1;
 
   while (remainingPool.length > 0) {
     const currentBatchPkgs: DeliveryPackage[] = [];
 
-    // Semilla del lote: El primer paquete disponible (prioriza 'large' si hay)
+    // Semilla del lote: El paquete más cercano al punto de partida o primer bulto
     const seed = remainingPool.shift()!;
     currentBatchPkgs.push(seed);
 
@@ -103,8 +115,8 @@ export function partitionPackagesIntoMotorcycleBatches(
       let minDistance = Infinity;
 
       // Calcular centroide actual de este lote
-      const batchLat = currentBatchPkgs.reduce((s, p) => s + (p.coordinates?.lat || 6.25), 0) / currentBatchPkgs.length;
-      const batchLng = currentBatchPkgs.reduce((s, p) => s + (p.coordinates?.lng || -75.56), 0) / currentBatchPkgs.length;
+      const batchLat = currentBatchPkgs.reduce((s, p) => s + (p.coordinates?.lat || startAnchor.lat), 0) / currentBatchPkgs.length;
+      const batchLng = currentBatchPkgs.reduce((s, p) => s + (p.coordinates?.lng || startAnchor.lng), 0) / currentBatchPkgs.length;
       const batchCenter = { lat: batchLat, lng: batchLng };
 
       for (let i = 0; i < remainingPool.length; i++) {
@@ -127,9 +139,12 @@ export function partitionPackagesIntoMotorcycleBatches(
       }
     }
 
-    // Ordenar los paquetes de este lote con la serpiente geográfica de Medellín
-    // Asegurando que los bultos grandes ('large') queden en las primeras paradas del lote
-    const sortedBatch = sortPackagesOfflineSnake(currentBatchPkgs, 'snake', 'CR').sort((a, b) => {
+    // Ordenar los paquetes de este lote usando TSP 2-Opt desde la posición GPS del motorizado
+    const batchStartLocation = batchNum === 1 ? startAnchor : (currentBatchPkgs[0]?.coordinates || startAnchor);
+    const tspSorted = solveTSPNearestNeighbor2Opt(currentBatchPkgs, batchStartLocation);
+
+    // Priorizar que bultos grandes ('large') queden en las primeras paradas del lote
+    const sortedBatch = [...tspSorted].sort((a, b) => {
       const aLarge = a.packageSize === 'large' ? 0 : 1;
       const bLarge = b.packageSize === 'large' ? 0 : 1;
       return aLarge - bLarge;
