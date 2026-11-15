@@ -21,6 +21,8 @@ import {
   ChevronUp,
   Loader2,
   CheckCircle2,
+  Sparkles,
+  Camera,
 } from 'lucide-react';
 import {
   db,
@@ -44,6 +46,10 @@ import {
   pushSnapshotToSupabase,
   useCloudSyncStatus,
 } from '../services/supabaseSync';
+import {
+  getSmartVisionConfig,
+  saveSmartVisionApiKey,
+} from '../services/smartLabelScanner';
 import { useToast, useConfirm } from './ui/FeedbackSystem';
 
 interface SettingsBackupViewProps {
@@ -78,6 +84,10 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   const [projectRef, setProjectRef] = useState<string>(initialSupa.projectRef);
   const [isConfiguredSupa, setIsConfiguredSupa] = useState<boolean>(initialSupa.isConfigured);
   const [showAdvancedCloud, setShowAdvancedCloud] = useState<boolean>(false);
+
+  // Estado Motor de Cámara Inteligente v4.5 (Gemini Flash Vision + OCR Offline)
+  const [visionCfg, setVisionCfg] = useState(() => getSmartVisionConfig());
+  const [geminiKeyInput, setGeminiKeyInput] = useState<string>(() => getSmartVisionConfig().geminiApiKey);
 
   // Consultar todos los Snapshots guardados en la bóveda protegida `backupSnapshots`
   const allSnapshots =
@@ -733,7 +743,81 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
         </div>
       </div>
 
-      {/* 3. LABORATORIO DE DIAGNÓSTICO Y TEST DE AGILIDAD */}
+      {/* 3. 🧠 MOTOR DE CÁMARA INTELIGENTE (IA VISION + OCR OFFLINE) */}
+      <div
+        className={`rounded-3xl border-2 p-4 shadow-xl space-y-3 ${
+          highContrastSun
+            ? 'bg-white border-teal-600 text-slate-950'
+            : 'bg-slate-900/95 border-teal-500/60 text-slate-50'
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2.5 rounded-2xl bg-gradient-to-br from-teal-500 to-emerald-600 text-white shrink-0">
+              <Camera className="w-5 h-5" />
+            </div>
+            <div>
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                  visionCfg.hasAiVisionKey
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                }`}
+              >
+                {visionCfg.modeLabel}
+              </span>
+              <h2 className="text-sm sm:text-base font-black mt-1">
+                🧠 Motor de Cámara Inteligente (IA Vision + OCR Offline)
+              </h2>
+              <p className="text-[11px] text-slate-400">
+                Extrae Guía, #4 Dígitos, Cliente, Celular y Dirección de etiquetas iMile en 1 foto
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-3 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2">
+          <label className="text-[10px] font-black uppercase text-teal-400 flex items-center gap-1">
+            <Sparkles className="w-3 h-3" />
+            <span>GEMINI API KEY OPCIONAL (PARA VISIÓN IA DE ULTRA PRECISIÓN)</span>
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={geminiKeyInput}
+              onChange={(e) => setGeminiKeyInput(e.target.value)}
+              placeholder="Opcional: AIzaSy... (Vacío = Usa OCR Local 100% Gratis)"
+              className={`flex-1 rounded-xl px-3 py-2 text-xs font-mono border ${
+                highContrastSun
+                  ? 'bg-white border-slate-300 text-slate-950'
+                  : 'bg-slate-900 border-slate-700 text-white'
+              }`}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                saveSmartVisionApiKey(geminiKeyInput);
+                const updated = getSmartVisionConfig();
+                setVisionCfg(updated);
+                toast.success(
+                  updated.hasAiVisionKey
+                    ? '🟢 Modo IA Vision Activado (Gemini 2.5 Flash)'
+                    : '⚡ Modo OCR Local + Barcode Nativo Activo',
+                  updated.modeLabel
+                );
+              }}
+              className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-xs shrink-0 active:scale-95 transition-all"
+            >
+              Guardar
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-400 leading-relaxed">
+            Sin API Key funciona <strong>100% gratis y offline</strong> combinando el detector nativo de códigos de barras de Android + <code>Tesseract.js</code> OCR local.
+          </p>
+        </div>
+      </div>
+
+      {/* 4. LABORATORIO DE DIAGNÓSTICO Y TEST DE AGILIDAD */}
       <div
         className={`rounded-3xl border-2 p-4 shadow-xl space-y-3 ${
           highContrastSun

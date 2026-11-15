@@ -10,7 +10,10 @@ import {
   CheckCircle2,
   X,
   Clock,
-  Barcode
+  Barcode,
+  Sparkles,
+  Loader2,
+  ImagePlus
 } from 'lucide-react';
 import { extractLastFourDigits } from '../db/database';
 import { parseIMileLabelBlock, parseMedellinAddress } from '../utils/addressParser';
@@ -19,6 +22,11 @@ import {
   clearStressTestPackages,
   type StressTestMetrics
 } from '../utils/demoSeeder';
+import {
+  scanIMileLabelSmart,
+  type SmartLabelScanResult
+} from '../services/smartLabelScanner';
+import { useToast } from './ui/FeedbackSystem';
 
 interface ScannerTestLabModalProps {
   isOpen: boolean;
@@ -50,7 +58,11 @@ export const ScannerTestLabModal: React.FC<ScannerTestLabModalProps> = ({
   onClose,
   highContrastSun
 }) => {
+  const toast = useToast();
   const [unitResult, setUnitResult] = useState<UnitTestResult | null>(null);
+  const [photoScanResult, setPhotoScanResult] = useState<SmartLabelScanResult | null>(null);
+  const [isScanningPhoto, setIsScanningPhoto] = useState<boolean>(false);
+  const [photoScanStage, setPhotoScanStage] = useState<string>('');
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraBenchmark, setCameraBenchmark] = useState<CameraBenchmarkResult | null>(null);
   const [cameraError, setCameraError] = useState<string>('');
@@ -109,6 +121,35 @@ export const ScannerTestLabModal: React.FC<ScannerTestLabModalProps> = ({
 
     if (typeof navigator !== 'undefined' && navigator.vibrate) {
       navigator.vibrate(60);
+    }
+  };
+
+  // 1B. Test en Vivo Subiendo una Foto Real de Etiqueta iMile desde Galería / Cámara
+  const handleGalleryLabelPhotoTest = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsScanningPhoto(true);
+    setPhotoScanResult(null);
+    setPhotoScanStage('🔍 Analizando foto de etiqueta iMile...');
+
+    try {
+      const result = await scanIMileLabelSmart(file, (stageMsg) => {
+        setPhotoScanStage(stageMsg);
+      });
+      setPhotoScanResult(result);
+      toast.success(
+        `✨ Etiqueta analizada en ${result.durationMs} ms`,
+        `Guía #${result.lastFourDigits} • ${result.recipientName || 'Sin nombre'} • ${result.rawAddress || 'Sin dirección'}`
+      );
+    } catch (err) {
+      toast.error(
+        '⚠️ Error procesando foto de prueba',
+        err instanceof Error ? err.message : 'Intenta con otra imagen.'
+      );
+    } finally {
+      setIsScanningPhoto(false);
+      setPhotoScanStage('');
+      e.target.value = '';
     }
   };
 
@@ -255,14 +296,93 @@ export const ScannerTestLabModal: React.FC<ScannerTestLabModalProps> = ({
             TO: &quot;alba lucia lopera castrillon / 573225873762 / carrera 43c #100 52 MEDELLIN ANTIOQUIA&quot;
           </p>
 
-          <button
-            type="button"
-            onClick={handleRunIMileLabelTest}
-            className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-md active:scale-95"
-          >
-            <Zap className="w-4 h-4 fill-slate-950" />
-            <span>⚡ EJECUTAR TEST CON GUÍA REAL IMILE (6103026696672)</span>
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleRunIMileLabelTest}
+              className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-95"
+            >
+              <Zap className="w-4 h-4 fill-slate-950 shrink-0" />
+              <span>⚡ Test Texto Guía #6672</span>
+            </button>
+
+            <label className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md cursor-pointer active:scale-95">
+              {isScanningPhoto ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                  <span>Analizando...</span>
+                </>
+              ) : (
+                <>
+                  <ImagePlus className="w-4 h-4 shrink-0" />
+                  <span>📸 Subir Foto Etiqueta Real</span>
+                </>
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleGalleryLabelPhotoTest}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          {isScanningPhoto && (
+            <div className="p-2.5 rounded-xl bg-teal-950/60 border border-teal-500/40 text-teal-200 text-xs font-bold flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-teal-400 shrink-0" />
+              <span>{photoScanStage || 'Procesando etiqueta...'}</span>
+            </div>
+          )}
+
+          {photoScanResult && (
+            <div className="p-3 rounded-xl bg-teal-950/60 border-2 border-emerald-500/60 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-black text-emerald-300 flex items-center gap-1">
+                  <Sparkles className="w-4 h-4" />
+                  {photoScanResult.engineBadge}
+                </span>
+                <span className="font-mono text-[11px] text-amber-300">
+                  {photoScanResult.durationMs} ms
+                </span>
+              </div>
+
+              <div className="flex items-start gap-2.5">
+                {photoScanResult.previewDataUrl && (
+                  <img
+                    src={photoScanResult.previewDataUrl}
+                    alt="Foto etiqueta"
+                    className="w-16 h-16 rounded-xl object-cover border border-emerald-400 shrink-0"
+                  />
+                )}
+                <div className="grid grid-cols-2 gap-1.5 flex-1 text-[11px]">
+                  <div>
+                    <span className="text-slate-400 block">Guía / #4 Dígitos:</span>
+                    <strong className="font-mono text-amber-400">
+                      {photoScanResult.trackingNumber || 'N/A'} (#{photoScanResult.lastFourDigits})
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block">Celular:</span>
+                    <strong className="font-mono text-emerald-300">
+                      {photoScanResult.recipientPhone || 'No detectado'}
+                    </strong>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-slate-400 block">Cliente (TO):</span>
+                    <strong className="text-white">
+                      {photoScanResult.recipientName || 'No detectado'}
+                    </strong>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-slate-400 block">Dirección:</span>
+                    <strong className="text-blue-300">
+                      {photoScanResult.rawAddress || 'No detectada'} ({photoScanResult.neighborhood})
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {unitResult && (
             <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-500/50 space-y-1.5 text-xs">
