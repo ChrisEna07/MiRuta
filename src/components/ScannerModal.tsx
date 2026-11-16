@@ -91,21 +91,27 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [smartBlockText, setSmartBlockText] = useState<string>('');
   const [editingPackageId, setEditingPackageId] = useState<number | null>(null);
 
-  // Contador Global de Carga y Alerta de Capacidad de Moto v10.2
+  // Contador Global de Carga y Freno de Volumen v10.5
   const [sessionCount, setSessionCount] = useState<number>(0);
   const [totalPendingCount, setTotalPendingCount] = useState<number>(0);
+  const [largePendingCount, setLargePendingCount] = useState<number>(0);
   const [showCapacityAlert, setShowCapacityAlert] = useState<boolean>(false);
+  const [showSingleLargeAlert, setShowSingleLargeAlert] = useState<boolean>(false);
+  const [showDoubleLargeAlert, setShowDoubleLargeAlert] = useState<boolean>(false);
 
-  const refreshTotalPendingCount = async () => {
+  const refreshPendingCounts = async () => {
     try {
       const all = await db.packages.toArray();
-      const count = all.filter(
+      const active = all.filter(
         (p) => !p.archivedInHistory && (p.status === 'pending' || p.status === 'in_progress')
-      ).length;
-      setTotalPendingCount(count);
-      return count;
+      );
+      const total = active.length;
+      const large = active.filter((p) => p.packageSize === 'large').length;
+      setTotalPendingCount(total);
+      setLargePendingCount(large);
+      return { total, large };
     } catch {
-      return 0;
+      return { total: 0, large: 0 };
     }
   };
 
@@ -113,17 +119,19 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     if (isOpen) {
       setSessionCount(0);
       setShowCapacityAlert(false);
-      refreshTotalPendingCount();
+      setShowSingleLargeAlert(false);
+      setShowDoubleLargeAlert(false);
+      refreshPendingCounts();
     }
   }, [isOpen]);
 
-  const getSessionBadgeClasses = (count: number) => {
-    if (count >= 20) {
+  const getSessionBadgeClasses = (count: number, largeCount: number = 0) => {
+    if (largeCount >= 2 || count >= 20) {
       return highContrastSun
         ? 'bg-rose-600 text-white border-2 border-rose-800 animate-pulse font-black'
         : 'bg-rose-500/25 text-rose-300 border border-rose-500/60 animate-pulse font-black shadow-[0_0_10px_rgba(244,63,94,0.4)]';
     }
-    if (count >= 15) {
+    if (largeCount === 1 || count >= 15) {
       return highContrastSun
         ? 'bg-amber-400 text-slate-950 border-2 border-amber-600 font-black'
         : 'bg-amber-500/25 text-amber-300 border border-amber-500/60 font-black';
@@ -220,6 +228,9 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   useEffect(() => {
     if (!isOpen) {
       stopCameraScanner();
+      setShowCapacityAlert(false);
+      setShowSingleLargeAlert(false);
+      setShowDoubleLargeAlert(false);
       setEditingPackageId(null);
       setIsAnalyzingLabel(false);
       setFrozenFramePreview('');
@@ -795,6 +806,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       }, 0);
 
       // Limpieza instantánea del formulario
+      const savedPkgSize = packageSize;
       setSaveState('idle');
       setEditingPackageId(null);
       setTrackingNumber('');
@@ -809,14 +821,36 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setHasScannedAttempt(false);
       lastDecodedBarcodeRef.current = '';
 
-      // Incremento del Contador de Sesión en Vivo y Total Global (v10.2)
+      // Incremento del Contador de Sesión en Vivo y Total Global (v10.2 / v10.5)
       const nextSessionCount = sessionCount + 1;
       setSessionCount(nextSessionCount);
 
-      const newTotalPendingCount = await refreshTotalPendingCount();
+      const counts = await refreshPendingCounts();
+      const newTotalPendingCount = counts.total;
+      const newLargePendingCount = counts.large;
 
-      // Disparador a los 20 Paquetes por Carga Total (Freno a los 20)
-      if (newTotalPendingCount === 20) {
+      // 1. Freno Estricto de Capacidad (2 Bultos Grandes) - v10.5
+      if (newLargePendingCount >= 2) {
+        stopCameraScanner();
+        setShowDoubleLargeAlert(true);
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([200, 100, 200, 100, 400]);
+        }
+        return;
+      }
+
+      // 2. Alerta Temprana (1er Bulto Grande registrado) - v10.5
+      if (savedPkgSize === 'large' && newLargePendingCount === 1) {
+        stopCameraScanner();
+        setShowSingleLargeAlert(true);
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([100, 50, 100]);
+        }
+        return;
+      }
+
+      // 3. Disparador a los 20 Paquetes por Carga Total (Freno a los 20) - v10.2
+      if (newTotalPendingCount >= 20) {
         stopCameraScanner();
         setShowCapacityAlert(true);
         if (typeof navigator !== 'undefined' && navigator.vibrate) {
@@ -865,13 +899,18 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                     ? 'Actualizar Guía en Ruta'
                     : '📸 Escáner Láser + IA'}
                 </h2>
-                {/* Badge Contador Global de Carga y Límite Real v10.2 */}
+                {/* Badge Contador Global de Carga y Freno de Volumen v10.5 */}
                 <div
                   className={`px-2.5 py-0.5 rounded-full text-[11px] sm:text-xs border flex items-center gap-1 shadow-sm transition-all ${getSessionBadgeClasses(
-                    totalPendingCount
+                    totalPendingCount,
+                    largePendingCount
                   )}`}
                 >
-                  <span>📦 Carga Total: {totalPendingCount} / 20 ({sessionCount} nuevos)</span>
+                  <span>
+                    {largePendingCount > 0
+                      ? `📦 Carga: ${totalPendingCount}/20 | ⚠️ Grandes: ${largePendingCount}/2`
+                      : `📦 Carga Total: ${totalPendingCount} / 20 (${sessionCount} nuevos)`}
+                  </span>
                 </div>
               </div>
               <p className="text-[10px] font-bold text-emerald-400 whitespace-normal break-words leading-snug mt-0.5">
@@ -1719,6 +1758,112 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                 className="w-full py-3 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-xs flex items-center justify-center gap-2 border border-slate-700 active:scale-95 transition-transform cursor-pointer"
               >
                 <span>🔄 Seguir Escaneando</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal / Alerta Temprana - 1er Bulto Grande (v10.5) */}
+      {showSingleLargeAlert && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div
+            className={`w-full max-w-sm rounded-3xl border-2 p-5 shadow-2xl text-center space-y-4 ${
+              highContrastSun
+                ? 'bg-white border-amber-500 text-slate-950'
+                : 'bg-slate-900 border-amber-500/80 text-white shadow-amber-500/20'
+            }`}
+          >
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center mx-auto text-amber-400 text-3xl">
+              ⚠️
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-lg font-black text-amber-400 flex items-center justify-center gap-1.5">
+                <span>⚠️ Bulto Voluminoso Detectado</span>
+              </h3>
+              <p className="text-xs sm:text-sm font-semibold text-slate-300 leading-snug">
+                Acabas de cargar <strong className="text-amber-300 font-black">1 paquete grande</strong>. Si ocupa toda la parrilla de la moto, ¿quieres llevar solo este paquete y salir a enrutar ya?
+              </p>
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSingleLargeAlert(false);
+                  onClose();
+                  onNavigateToRoute?.();
+                }}
+                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/30 active:scale-95 transition-transform cursor-pointer border border-emerald-300"
+              >
+                <span>🏁 Llevar solo este y Enrutar</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSingleLargeAlert(false);
+                  setActiveScannerTab('live');
+                  scrollToTopCamera();
+                  startCameraScanner();
+                }}
+                className="w-full py-3 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-extrabold text-xs flex items-center justify-center gap-2 border border-slate-700 active:scale-95 transition-transform cursor-pointer"
+              >
+                <span>🔄 Queda espacio, seguir escaneando</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal / Freno Estricto de Capacidad - 2 Bultos Grandes (v10.5) */}
+      {showDoubleLargeAlert && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div
+            className={`w-full max-w-sm rounded-3xl border-2 p-5 shadow-2xl text-center space-y-4 ${
+              highContrastSun
+                ? 'bg-white border-rose-600 text-slate-950'
+                : 'bg-slate-900 border-rose-500/90 text-white shadow-rose-500/30'
+            }`}
+          >
+            <div className="w-16 h-16 rounded-2xl bg-rose-500/20 border-2 border-rose-500 flex items-center justify-center mx-auto text-rose-400 text-3xl">
+              🛑
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-lg font-black text-rose-400 flex items-center justify-center gap-1.5">
+                <span>🛑 Límite de Parrilla Alcanzado</span>
+              </h3>
+              <p className="text-xs sm:text-sm font-semibold text-slate-300 leading-snug">
+                Llevas <strong className="text-rose-300 font-black">2 bultos grandes</strong>. La capacidad de la moto para objetos voluminosos está al límite. Debes enrutar y salir a entregar esta tanda.
+              </p>
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDoubleLargeAlert(false);
+                  onClose();
+                  onNavigateToRoute?.();
+                }}
+                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/30 active:scale-95 transition-transform cursor-pointer border border-emerald-300"
+              >
+                <span>🏁 Terminar y Enrutar</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDoubleLargeAlert(false);
+                  setActiveScannerTab('live');
+                  scrollToTopCamera();
+                  startCameraScanner();
+                }}
+                className="w-full py-2 px-3 text-xs text-slate-400 hover:text-slate-200 underline underline-offset-4 cursor-pointer transition-colors"
+              >
+                Ignorar riesgo y seguir
               </button>
             </div>
           </div>
