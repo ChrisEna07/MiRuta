@@ -122,7 +122,7 @@ export const getDynamicGreeting = () => {
 };
 
 /**
- * Construye el enlace de WhatsApp 1-Click para pre-avisar al cliente ("Voy en camino").
+ * Construye el enlace de WhatsApp 1-Click para pre-avisar al cliente ("Voy en camino") (v10.9).
  */
 export function buildWhatsAppPreNoticeUrl(pkg: DeliveryPackage): string {
   const phone = (pkg.recipientPhone || '').replace(/\D/g, '');
@@ -130,7 +130,10 @@ export function buildWhatsAppPreNoticeUrl(pkg: DeliveryPackage): string {
     ? phone.slice(2)
     : phone;
 
-  const text = `${getDynamicGreeting()}, voy en camino con su paquete. ¿Me confirma si hay alguien para recibirlo en la dirección?`;
+  const last4 = pkg.trackingNumber.slice(-4);
+  const recipientName = pkg.recipientName?.trim() || 'Cliente';
+
+  const text = `${getDynamicGreeting()} ${recipientName}, soy su repartidor. Llevo su paquete con terminación #${last4}. ¿Me confirma si la dirección ${pkg.rawAddress} es correcta? Si es diferente o difícil de llegar, por favor envíeme su ubicación actual para llegar más rápido.`;
   if (cleanPhone.length >= 10) {
     return `https://wa.me/57${cleanPhone}?text=${encodeURIComponent(text)}`;
   }

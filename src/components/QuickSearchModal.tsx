@@ -20,8 +20,7 @@ interface QuickSearchModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectPackage?: (pkg: DeliveryPackage) => void;
-  setFocusedPackageId?: (id: string | null) => void;
-  setActiveTab?: (tab: 'pilot' | 'route' | 'quincena' | 'settings') => void;
+  setGlobalSelectedPackage?: (pkg: DeliveryPackage | null) => void;
   highContrastSun?: boolean;
 }
 
@@ -29,24 +28,20 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
   isOpen,
   onClose,
   onSelectPackage,
-  setFocusedPackageId,
-  setActiveTab,
+  setGlobalSelectedPackage,
   highContrastSun = false,
 }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleSelectResult = (pkg: DeliveryPackage) => {
-    if (setFocusedPackageId) {
-      setFocusedPackageId(pkg.trackingNumber);
+    if (setGlobalSelectedPackage) {
+      setGlobalSelectedPackage(pkg);
     }
-    if (setActiveTab) {
-      setActiveTab('route');
-    }
-    onClose();
     if (onSelectPackage) {
       onSelectPackage(pkg);
     }
+    onClose();
   };
 
   // Consulta en vivo reactiva a IndexedDB

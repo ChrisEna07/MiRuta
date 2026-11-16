@@ -51,6 +51,7 @@ interface RouteOptimizerViewProps {
   packages: DeliveryPackage[];
   highContrastSun: boolean;
   onOpenScanner: () => void;
+  onSelectPackage?: (pkg: DeliveryPackage) => void;
   focusedPackageId?: string | null;
   setFocusedPackageId?: (id: string | null) => void;
 }
@@ -59,6 +60,7 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   packages,
   highContrastSun,
   onOpenScanner,
+  onSelectPackage,
   focusedPackageId,
   setFocusedPackageId,
 }) => {
@@ -711,7 +713,13 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => setSelectedPackage(pkg)}
+                          onClick={() => {
+                            if (onSelectPackage) {
+                              onSelectPackage(pkg);
+                            } else {
+                              setSelectedPackage(pkg);
+                            }
+                          }}
                           className="py-1 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] flex items-center gap-1 border border-slate-700 active:scale-95 cursor-pointer"
                           title="Ver ficha completa y WhatsApp"
                         >
@@ -928,15 +936,17 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
         </div>
       )}
 
-      {/* Modal de Ficha y Detalles del Paquete v10.6 */}
-      <PackageDetailsModal
-        isOpen={Boolean(selectedPackage)}
-        packageData={selectedPackage}
-        onClose={() => setSelectedPackage(null)}
-        onPinAsNextStop={handlePinAsNextStop}
-        onRetryNovelty={handleRetryNoveltyPackage}
-        highContrastSun={highContrastSun}
-      />
+      {/* Modal de Ficha y Detalles del Paquete v10.6 / v10.9 (Fallback si no hay handler global) */}
+      {!onSelectPackage && (
+        <PackageDetailsModal
+          isOpen={Boolean(selectedPackage)}
+          packageData={selectedPackage}
+          onClose={() => setSelectedPackage(null)}
+          onPinAsNextStop={handlePinAsNextStop}
+          onRetryNovelty={handleRetryNoveltyPackage}
+          highContrastSun={highContrastSun}
+        />
+      )}
     </div>
   );
 };

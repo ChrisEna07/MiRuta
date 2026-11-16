@@ -50,12 +50,14 @@ interface PilotModeViewProps {
   packages: DeliveryPackage[];
   highContrastSun: boolean;
   onOpenScanner: () => void;
+  onSelectPackage?: (pkg: DeliveryPackage) => void;
 }
 
 export const PilotModeView: React.FC<PilotModeViewProps> = ({
   packages,
   highContrastSun,
-  onOpenScanner
+  onOpenScanner,
+  onSelectPackage,
 }) => {
   const toast = useToast();
   const [now, setNow] = useState<number>(Date.now());
@@ -858,7 +860,13 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
               </p>
               <button
                 type="button"
-                onClick={() => setShowDetailsModal(true)}
+                onClick={() => {
+                  if (onSelectPackage) {
+                    onSelectPackage(currentPkg);
+                  } else {
+                    setShowDetailsModal(true);
+                  }
+                }}
                 className="py-0.5 px-2 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 font-bold text-[10px] border border-blue-500/30 shrink-0 flex items-center gap-0.5 active:scale-95 transition-all cursor-pointer"
                 title="Editar nombre, teléfono o datos del cliente"
               >
@@ -1241,13 +1249,15 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       {/* Modal Cierre de Jornada v8.6 */}
       {showCloseShiftModal && renderCloseShiftModal()}
 
-      {/* Modal Ficha y Edición de Paquete Activo (v10.7) */}
-      <PackageDetailsModal
-        isOpen={showDetailsModal}
-        packageData={currentPkg}
-        onClose={() => setShowDetailsModal(false)}
-        highContrastSun={highContrastSun}
-      />
+      {/* Modal Ficha y Edición de Paquete Activo (v10.7 / v10.9) */}
+      {!onSelectPackage && (
+        <PackageDetailsModal
+          isOpen={showDetailsModal}
+          packageData={currentPkg}
+          onClose={() => setShowDetailsModal(false)}
+          highContrastSun={highContrastSun}
+        />
+      )}
     </div>
   );
 };

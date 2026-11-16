@@ -10,7 +10,7 @@ import {
   History,
   X
 } from 'lucide-react';
-import { db, getTodayShiftId, ensureShiftExists } from './db/database';
+import { db, getTodayShiftId, ensureShiftExists, type DeliveryPackage } from './db/database';
 import { seedMedellinDemoBatch } from './utils/demoSeeder';
 import { DynamicHeader } from './components/DynamicHeader';
 import { IMileTodayTasksCard } from './components/IMileTodayTasksCard';
@@ -24,6 +24,7 @@ import { ScannerModal } from './components/ScannerModal';
 import { DeliveryCheckoutScanner } from './components/DeliveryCheckoutScanner';
 import { ScannerTestLabModal } from './components/ScannerTestLabModal';
 import { QuickSearchModal } from './components/QuickSearchModal';
+import { PackageDetailsModal } from './components/PackageDetailsModal';
 import { FeedbackProvider } from './components/ui/FeedbackSystem';
 
 // Pestañas Estrictamente Aisladas v9.0 (Cero Mezcla de Componentes ni Scroll Infinito)
@@ -31,7 +32,7 @@ type ActiveTab = 'pilot' | 'route' | 'quincena' | 'settings';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('pilot');
-  const [focusedPackageId, setFocusedPackageId] = useState<string | null>(null);
+  const [globalSelectedPackage, setGlobalSelectedPackage] = useState<DeliveryPackage | null>(null);
   const [scannerOpen, setScannerOpen] = useState<boolean>(false);
   const [checkoutScannerOpen, setCheckoutScannerOpen] = useState<boolean>(false);
   const [testLabOpen, setTestLabOpen] = useState<boolean>(false);
@@ -131,6 +132,7 @@ export function App() {
                   packages={todayPackages}
                   highContrastSun={highContrastSun}
                   onOpenScanner={() => setScannerOpen(true)}
+                  onSelectPackage={setGlobalSelectedPackage}
                 />
               </motion.div>
             )}
@@ -148,8 +150,7 @@ export function App() {
                   packages={todayPackages}
                   highContrastSun={highContrastSun}
                   onOpenScanner={() => setScannerOpen(true)}
-                  focusedPackageId={focusedPackageId}
-                  setFocusedPackageId={setFocusedPackageId}
+                  onSelectPackage={setGlobalSelectedPackage}
                 />
               </motion.div>
             )}
@@ -214,16 +215,41 @@ export function App() {
           </AnimatePresence>
         </main>
 
-        {/* Modal de Búsqueda Reactiva Rápida de Guías (v9.0 / v10.6) */}
+        {/* Modal de Búsqueda Reactiva Rápida de Guías (v9.0 / v10.6 / v10.9) */}
         <QuickSearchModal
           isOpen={searchModalOpen}
           onClose={() => setSearchModalOpen(false)}
-          setFocusedPackageId={setFocusedPackageId}
-          setActiveTab={setActiveTab}
+          setGlobalSelectedPackage={setGlobalSelectedPackage}
           onSelectPackage={(pkg) => {
-            setFocusedPackageId(pkg.trackingNumber);
-            setActiveTab('route');
+            setGlobalSelectedPackage(pkg);
             setSearchModalOpen(false);
+          }}
+          highContrastSun={highContrastSun}
+        />
+
+        {/* Ficha Detallada Global de Paquete (Hotfix v10.9) */}
+        <PackageDetailsModal
+          isOpen={Boolean(globalSelectedPackage)}
+          packageData={globalSelectedPackage}
+          onClose={() => setGlobalSelectedPackage(null)}
+          onPinAsNextStop={async (pkg) => {
+            if (pkg.id !== undefined) {
+              const allPkgs = await db.packages.toArray();
+              const minOrder = allPkgs
+                .filter((p) => !p.archivedInHistory && p.status === 'pending')
+                .reduce((min, p) => Math.min(min, p.routeOrder || 999), 999);
+              await db.packages.update(pkg.id, {
+                routeOrder: Math.max(1, minOrder - 1),
+              });
+            }
+          }}
+          onRetryNovelty={async (pkg) => {
+            if (pkg.id !== undefined) {
+              await db.packages.update(pkg.id, {
+                status: 'pending',
+                issueNote: '',
+              });
+            }
           }}
           highContrastSun={highContrastSun}
         />
