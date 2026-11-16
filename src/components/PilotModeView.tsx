@@ -44,6 +44,7 @@ import { detectSameBlockClusters } from '../utils/addressParser';
 import { syncToSupabase } from '../services/supabaseSync';
 import { PackageSizeBadge } from './PackageSizeBadge';
 import { useToast } from './ui/FeedbackSystem';
+import { PackageDetailsModal } from './PackageDetailsModal';
 
 interface PilotModeViewProps {
   packages: DeliveryPackage[];
@@ -63,6 +64,7 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
   const [uploadingPhoto, setUploadingPhoto] = useState<boolean>(false);
   const [nextClientAlertPkg, setNextClientAlertPkg] = useState<DeliveryPackage | null>(null);
   const [showArrivalActions, setShowArrivalActions] = useState<boolean>(false);
+  const [showDetailsModal, setShowDetailsModal] = useState<boolean>(false);
 
   // Control de Jornada v8.6 (Inicio, Pausas Inteligentes y Cierre)
   const todayShiftId = getTodayShiftId();
@@ -850,9 +852,19 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
             <h2 className="mt-2 text-lg font-black leading-tight break-words">
               {currentPkg.rawAddress}
             </h2>
-            <p className={`text-xs font-bold mt-0.5 ${highContrastSun ? 'text-slate-700' : 'text-slate-300'}`}>
-              👤 {currentPkg.recipientName} • 📍 {currentPkg.parsedAddress?.neighborhood || 'Medellín'}
-            </p>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+              <p className={`text-xs font-bold ${highContrastSun ? 'text-slate-700' : 'text-slate-300'}`}>
+                👤 {currentPkg.recipientName} • 📍 {currentPkg.parsedAddress?.neighborhood || 'Medellín'}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowDetailsModal(true)}
+                className="py-0.5 px-2 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 font-bold text-[10px] border border-blue-500/30 shrink-0 flex items-center gap-0.5 active:scale-95 transition-all cursor-pointer"
+                title="Editar nombre, teléfono o datos del cliente"
+              >
+                <span>✏️ Editar</span>
+              </button>
+            </div>
             <p className="text-[11px] font-mono text-slate-400 mt-0.5">
               Guía iMile: {currentPkg.trackingNumber}
             </p>
@@ -1228,6 +1240,14 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
 
       {/* Modal Cierre de Jornada v8.6 */}
       {showCloseShiftModal && renderCloseShiftModal()}
+
+      {/* Modal Ficha y Edición de Paquete Activo (v10.7) */}
+      <PackageDetailsModal
+        isOpen={showDetailsModal}
+        packageData={currentPkg}
+        onClose={() => setShowDetailsModal(false)}
+        highContrastSun={highContrastSun}
+      />
     </div>
   );
 };

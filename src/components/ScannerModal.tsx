@@ -736,26 +736,44 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
       const parsedAddr = parseMedellinAddress(addressToSave, neighborhood);
 
+      // Buscar si el paquete ya existe por id o por trackingNumber (v10.7)
+      let existingPkg: DeliveryPackage | undefined;
       if (editingPackageId) {
-        const existingPkg = await db.packages.get(editingPackageId);
-        if (existingPkg) {
-          const updatedPkg: DeliveryPackage = {
-            ...existingPkg,
-            trackingNumber: finalTracking,
-            lastFourDigits: extractLastFourDigits(finalTracking),
-            recipientName: recipientName.trim() || 'Cliente Sin Nombre',
-            recipientPhone: normalizeColombianPhone(recipientPhone) || '573000000000',
-            rawAddress: addressToSave,
-            parsedAddress: parsedAddr,
-            packageSize: packageSize,
-          };
-          updatedPkg.coordinates = estimateMedellinCoordinatesFromAddress(updatedPkg);
-          await db.packages.put(updatedPkg);
-          toast.success(
-            `✅ Guía #${updatedPkg.lastFourDigits} actualizada`,
-            updatedPkg.rawAddress
-          );
-        }
+        existingPkg = await db.packages.get(editingPackageId);
+      }
+      if (!existingPkg && finalTracking) {
+        existingPkg = await db.packages.where('trackingNumber').equals(finalTracking).first();
+      }
+
+      if (existingPkg && existingPkg.id !== undefined) {
+        const updatedPkg: DeliveryPackage = {
+          ...existingPkg,
+          trackingNumber: finalTracking,
+          lastFourDigits: extractLastFourDigits(finalTracking),
+          recipientName: recipientName.trim() || existingPkg.recipientName || 'Cliente Sin Nombre',
+          recipientPhone: normalizeColombianPhone(recipientPhone) || existingPkg.recipientPhone || '573000000000',
+          rawAddress: addressToSave,
+          parsedAddress: parsedAddr,
+          packageSize: packageSize,
+        };
+        updatedPkg.coordinates = estimateMedellinCoordinatesFromAddress(updatedPkg);
+
+        await db.packages.put(updatedPkg);
+        await db.packages.update(finalTracking, {
+          recipientName: updatedPkg.recipientName,
+          recipientPhone: updatedPkg.recipientPhone,
+          rawAddress: updatedPkg.rawAddress,
+          parsedAddress: updatedPkg.parsedAddress,
+          coordinates: updatedPkg.coordinates,
+          packageSize: updatedPkg.packageSize,
+          lastFourDigits: updatedPkg.lastFourDigits,
+          trackingNumber: updatedPkg.trackingNumber,
+        });
+
+        toast.success(
+          `✅ Guía #${updatedPkg.lastFourDigits} actualizada`,
+          updatedPkg.rawAddress
+        );
       } else {
         const existingToday = await db.packages.where('shiftId').equals(shiftId).toArray();
         const maxOrder = existingToday.reduce((max, p) => Math.max(max, p.routeOrder || 0), 0);

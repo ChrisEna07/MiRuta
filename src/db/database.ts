@@ -141,7 +141,7 @@ export interface LearnedPatternRecord {
 }
 
 export class MiRutaDB extends Dexie {
-  packages!: Table<DeliveryPackage, number>;
+  packages!: Table<DeliveryPackage, number | string>;
   shifts!: Table<WorkShift, string>;
   deductions!: Table<DeductionRecord, number>;
   settlements!: Table<QuincenaSettlement, number>;
@@ -184,10 +184,44 @@ export class MiRutaDB extends Dexie {
       backupSnapshots: '++id, folderDate, timestamp, triggerType',
       learnedPatterns: '++id, &recipientPhone, sampleTrackingNumber, lastFourDigits, updatedAt'
     });
+
+    // Interceptor blindado v10.7: permite actualizar usando trackingNumber (string) o id (number) indistintamente
+    const origUpdate = this.packages.update.bind(this.packages);
+    this.packages.update = (async (key: any, changes: any) => {
+      // 1. Si es id numérico, intentar actualizar directo
+      if (typeof key === 'number') {
+        const res = await origUpdate(key, changes);
+        if (res > 0) return res;
+      }
+
+      // 2. Si es trackingNumber (string) o clave no primaria, buscar por trackingNumber
+      const trackingStr = String(key);
+      const found = await this.packages.where('trackingNumber').equals(trackingStr).first();
+      if (found && found.id !== undefined) {
+        return await origUpdate(found.id, changes);
+      }
+
+      // 3. Fallback adicional modificando coincidencia directa
+      const modCount = await this.packages.where('trackingNumber').equals(trackingStr).modify(changes);
+      if (modCount > 0) return modCount;
+
+      return await origUpdate(key, changes);
+    }) as any;
   }
 }
 
 export const db = new MiRutaDB();
+
+/**
+ * Actualiza un paquete por trackingNumber o id numérico de forma transparente.
+ * Garantiza que useLiveQuery se active y los cambios se reflejen al instante en toda la app (v10.7).
+ */
+export async function updatePackageInDb(
+  trackingOrId: string | number,
+  changes: Partial<DeliveryPackage>
+): Promise<number> {
+  return await db.packages.update(trackingOrId as any, changes);
+}
 
 const RATE_STORAGE_KEY = 'miruta_default_package_rate_cop';
 const MOTO_CAPACITY_STORAGE_KEY = 'miruta_moto_capacity_max_pkgs';
