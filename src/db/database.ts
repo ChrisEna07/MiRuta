@@ -223,6 +223,25 @@ export async function updatePackageInDb(
   return await db.packages.update(trackingOrId as any, changes);
 }
 
+/**
+ * Registra una acción de auditoría sobre el paquete en IndexedDB (v10.8).
+ */
+export async function logPackageAction(trackingNumber: string, action: string): Promise<void> {
+  try {
+    const pkg = await db.packages.where('trackingNumber').equals(trackingNumber).first();
+    const timestampStr = new Date().toLocaleTimeString('es-CO', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+    const existingAudit = pkg?.auditNote ? `${pkg.auditNote} | ` : '';
+    const newAudit = `${existingAudit}[${timestampStr}] ${action}`;
+    await db.packages.update(trackingNumber, { auditNote: newAudit });
+  } catch (err) {
+    console.warn('logPackageAction error:', err);
+  }
+}
+
 const RATE_STORAGE_KEY = 'miruta_default_package_rate_cop';
 const MOTO_CAPACITY_STORAGE_KEY = 'miruta_moto_capacity_max_pkgs';
 

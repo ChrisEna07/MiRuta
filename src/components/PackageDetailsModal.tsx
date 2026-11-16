@@ -17,13 +17,14 @@ import {
   Save,
   Package
 } from 'lucide-react';
-import { db, type DeliveryPackage, type PackagePackageSize, normalizeColombianPhone } from '../db/database';
+import { db, type DeliveryPackage, type PackagePackageSize, normalizeColombianPhone, logPackageAction } from '../db/database';
 import { parseMedellinAddress } from '../utils/addressParser';
 import {
   buildArrivalWhatsAppUrl,
   buildWhatsAppPreNoticeUrl,
   getDynamicGreeting,
-  buildNavigationLinks
+  buildNavigationLinks,
+  playCashRegisterSuccess
 } from '../utils/mediaAndFeedback';
 import { PackageSizeBadge } from './PackageSizeBadge';
 import { useToast } from './ui/FeedbackSystem';
@@ -153,6 +154,70 @@ export const PackageDetailsModal: React.FC<PackageDetailsModalProps> = ({
 
   const isDelivered = currentPkg.status === 'delivered';
   const isIssue = currentPkg.status === 'issue';
+  const isPendingOrInProgress = currentPkg.status === 'pending' || currentPkg.status === 'in_progress';
+
+  // Liquidación Inmediata de Entregas desde Ficha Detallada (Hotfix v10.8)
+  const handleMarkAsDelivered = async () => {
+    try {
+      const now = Date.now();
+      const defaultRate = 2200;
+      const updatedFields: Partial<DeliveryPackage> = {
+        status: 'delivered',
+        deliveredAt: now,
+        rate: currentPkg.rate || defaultRate,
+      };
+
+      await db.packages.update(currentPkg.trackingNumber, updatedFields);
+      if (currentPkg.id !== undefined) {
+        await db.packages.update(currentPkg.id, updatedFields);
+      }
+      await db.packages.where('trackingNumber').equals(currentPkg.trackingNumber).modify(updatedFields);
+
+      await logPackageAction(currentPkg.trackingNumber, 'Marcado como entregado desde ficha');
+
+      playCashRegisterSuccess();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([100, 50, 100]);
+      }
+      toast.success(
+        `✅ Entregado #${currentPkg.lastFourDigits}`,
+        'Paquete liquidado exitosamente'
+      );
+      onClose();
+    } catch (err) {
+      console.error('Error al marcar entregado:', err);
+      toast.error('⚠️ No se pudo registrar la entrega');
+    }
+  };
+
+  const handleReportIssue = async () => {
+    try {
+      const updatedFields: Partial<DeliveryPackage> = {
+        status: 'issue',
+        issueNote: currentPkg.issueNote || 'Novedad reportada desde ficha detallada',
+      };
+
+      await db.packages.update(currentPkg.trackingNumber, updatedFields);
+      if (currentPkg.id !== undefined) {
+        await db.packages.update(currentPkg.id, updatedFields);
+      }
+      await db.packages.where('trackingNumber').equals(currentPkg.trackingNumber).modify(updatedFields);
+
+      await logPackageAction(currentPkg.trackingNumber, 'Marcado como novedad desde ficha');
+
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([200, 100]);
+      }
+      toast.warning(
+        `⚠️ Novedad #${currentPkg.lastFourDigits}`,
+        'Paquete movido a Novedades/Reintentos'
+      );
+      onClose();
+    } catch (err) {
+      console.error('Error al reportar novedad:', err);
+      toast.error('⚠️ No se pudo registrar la novedad');
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-5 touch-scroll-y animate-in fade-in duration-150">
@@ -347,6 +412,40 @@ export const PackageDetailsModal: React.FC<PackageDetailsModalProps> = ({
           ) : (
             /* MODO LECTURA Y OPERACIÓN NORMAL */
             <>
+              {/* FILA SUPERIOR DE ACCIÓN DE ESTADO / LIQUIDACIÓN (Hotfix v10.8) */}
+              {isPendingOrInProgress && (
+                <div className="p-3.5 rounded-2xl bg-gradient-to-br from-emerald-950/60 via-slate-950 to-slate-900 border-2 border-emerald-500/80 shadow-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                      <span>⚡ LIQUIDACIÓN INMEDIATA (CHECKOUT EN FICHA)</span>
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      Retroactivo / 1-Toque
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={handleMarkAsDelivered}
+                      className="sm:col-span-2 py-3.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-600 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/30 active:scale-95 transition-all cursor-pointer border border-emerald-300"
+                    >
+                      <CheckCircle2 className="w-5 h-5 fill-slate-950 shrink-0" />
+                      <span>✅ Marcar como Entregado</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleReportIssue}
+                      className="py-3 px-3 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/50 text-rose-300 font-black text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>⚠️ Reportar Novedad</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Tamaño de Bulto y Capacidad */}
               <div className="p-3 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-400">Capacidad / Ubicación en Moto:</span>
