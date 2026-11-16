@@ -36,6 +36,7 @@ import {
   restoreSessionFromSnapshot,
   downloadSnapshotAsJSONFile,
   saveSnapshotToDateFolderWithDirectoryPicker,
+  getTodayShiftId,
   type BackupSnapshotRecord,
 } from '../db/database';
 import { formatCOP } from '../utils/mediaAndFeedback';
@@ -71,11 +72,13 @@ import { useToast, useConfirm } from './ui/FeedbackSystem';
 interface SettingsBackupViewProps {
   highContrastSun: boolean;
   onOpenTestLab: () => void;
+  onNavigateToTab?: (tab: 'pilot' | 'route') => void;
 }
 
 export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
   highContrastSun,
   onOpenTestLab,
+  onNavigateToTab,
 }) => {
   const toast = useToast();
   const { confirm } = useConfirm();
@@ -252,6 +255,34 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     }
   };
 
+  const rehydrateCurrentShiftAndPackages = async () => {
+    const todayShiftId = getTodayShiftId();
+    const allShifts = await db.shifts.toArray();
+    const latestShift = allShifts.sort((a, b) => {
+      const timeA = (a as unknown as { startTime?: number }).startTime || a.startedAt || (a.date ? new Date(a.date).getTime() : 0);
+      const timeB = (b as unknown as { startTime?: number }).startTime || b.startedAt || (b.date ? new Date(b.date).getTime() : 0);
+      return timeB - timeA;
+    })[0];
+
+    if (latestShift) {
+      await db.shifts.put({
+        ...latestShift,
+        id: todayShiftId,
+        date: todayShiftId,
+        status: latestShift.status || 'active',
+        startedAt: latestShift.startedAt || (latestShift as unknown as { startTime?: number }).startTime || Date.now(),
+      });
+    }
+
+    const allPkgs = await db.packages.toArray();
+    const unarchivedPkgs = allPkgs.filter((p) => !p.archivedInHistory);
+    for (const p of unarchivedPkgs) {
+      if (p.id !== undefined && p.shiftId !== todayShiftId) {
+        await db.packages.update(p.id, { shiftId: todayShiftId });
+      }
+    }
+  };
+
   const handleRestoreSnapshotSession = async (snap: BackupSnapshotRecord) => {
     if (snap.id === undefined) return;
     const accepted = await confirm({
@@ -271,10 +302,14 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
     setRestoringSnapId(snap.id);
     try {
       const restored = await restoreSessionFromSnapshot(snap.id);
+      await rehydrateCurrentShiftAndPackages();
       toast.success(
         `✅ Sesión "${restored.sessionName}" restaurada al 100%`,
-        `${restored.stats.packagesCount} paquetes recuperados en tu ruta.`
+        `${restored.stats.packagesCount} paquetes cargados en la jornada activa.`
       );
+      if (onNavigateToTab) {
+        onNavigateToTab('pilot');
+      }
     } catch {
       toast.error('⚠️ No se pudo restaurar la sesión seleccionada');
     } finally {
@@ -516,11 +551,15 @@ export const SettingsBackupView: React.FC<SettingsBackupViewProps> = ({
 
       const snapId = await db.backupSnapshots.add(importedSnap);
       await restoreSessionFromSnapshot(snapId);
+      await rehydrateCurrentShiftAndPackages();
 
       toast.success(
         `✅ Backup importado con éxito`,
-        `${parsed.packages.length} paquetes recuperados en tu ruta.`
+        `${parsed.packages.length} paquetes cargados en la jornada activa.`
       );
+      if (onNavigateToTab) {
+        onNavigateToTab('pilot');
+      }
     } catch {
       toast.error('⚠️ Error al leer o restaurar el archivo JSON');
     }

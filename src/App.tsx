@@ -209,6 +209,7 @@ export function App() {
                 <SettingsBackupView
                   highContrastSun={highContrastSun}
                   onOpenTestLab={() => setTestLabOpen(true)}
+                  onNavigateToTab={(tab) => setActiveTab(tab)}
                 />
               </motion.div>
             )}
