@@ -21,10 +21,12 @@ import {
   ShieldAlert,
   ChevronRight,
   TrendingUp,
+  Copy,
+  X
 } from 'lucide-react';
 import { db, type DeliveryPackage, getMaxMotorcycleCapacity } from '../db/database';
 import { detectSameBlockClusters } from '../utils/addressParser';
-import { openWazeNavigation, buildNavigationLinks } from '../utils/mediaAndFeedback';
+import { buildNavigationLinks, playCashRegisterSuccess } from '../utils/mediaAndFeedback';
 import { PackageSizeBadge } from './PackageSizeBadge';
 import {
   sortPackagesOfflineSnake,
@@ -32,7 +34,9 @@ import {
   geocodeMedellinAddress,
   persistRouteOrder,
   getCurrentMotorcycleGPS,
+  optimizeRouteWithStrategy,
   type SweepDirection,
+  type RoutingStrategy,
 } from '../utils/routeOptimizer';
 import {
   partitionPackagesIntoMotorcycleBatches,
@@ -63,6 +67,11 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   const [optimizeReady, setOptimizeReady] = useState<boolean>(false);
   const [selectedBatchFilter, setSelectedBatchFilter] = useState<number | 'all'>('all');
 
+  // Modal de Configuración de Ruta Pre-Condicionada v10.0
+  const [showRouteConfigModal, setShowRouteConfigModal] = useState<boolean>(false);
+  const [gpsStatus, setGpsStatus] = useState<'locating' | 'ready'>('locating');
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+
   const maxCapacity = getMaxMotorcycleCapacity();
 
   const unarchivedPackages = packages.filter((p) => !p.archivedInHistory);
@@ -88,30 +97,75 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   const sameBlockAlerts = detectSameBlockClusters(unarchivedPackages);
   const issuePackages = unarchivedPackages.filter((p) => p.status === 'issue');
 
-  // Optimización Híbrida con Distribución Automática de Tandas en Moto y GPS real
-  const handleAutoBatchOptimize = async () => {
+  // Abrir Modal de Configuración y Forzar Lectura GPS en Vivo de la Moto
+  const handleOpenRouteConfig = () => {
+    setShowRouteConfigModal(true);
+    setGpsStatus('locating');
+    setUserCoords(null);
+
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = {
+            lat: Number(pos.coords.latitude.toFixed(6)),
+            lng: Number(pos.coords.longitude.toFixed(6))
+          };
+          setUserCoords(coords);
+          setGpsStatus('ready');
+        },
+        async () => {
+          const fallback = await getCurrentMotorcycleGPS(3000);
+          setUserCoords(fallback);
+          setGpsStatus('ready');
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
+      );
+    } else {
+      getCurrentMotorcycleGPS(3000).then((fallback) => {
+        setUserCoords(fallback);
+        setGpsStatus('ready');
+      });
+    }
+  };
+
+  // Aplicar Estrategia Seleccionada con NODO 0 = Coordenadas GPS Actuales
+  const handleSelectStrategy = async (strategy: RoutingStrategy) => {
+    const coords = userCoords || (await getCurrentMotorcycleGPS(3000));
+    setShowRouteConfigModal(false);
     setIsOptimizing(true);
-    setOptimizingStatus('Obteniendo GPS de la moto para iniciar desde el punto más cercano...');
+    setOptimizingStatus('Calculando ruta con NODO 0 en tu ubicación...');
+
     try {
-      const liveGPS = await getCurrentMotorcycleGPS(3000);
-      setOptimizingStatus('Agrupando en tandas compactas para moto (< 20 cuadras)...');
-      const result = partitionPackagesIntoMotorcycleBatches(unarchivedPackages, maxCapacity, liveGPS);
+      // 1. Reordenar con NODO 0 = coords y estrategia elegida
+      const ordered = optimizeRouteWithStrategy(unarchivedPackages, coords, strategy);
+      await persistRouteOrder(ordered);
+
+      // 2. Particionar tandas con NODO 0 = coords
+      const result = partitionPackagesIntoMotorcycleBatches(ordered, maxCapacity, coords);
       await persistMotorcycleBatches(result.batches);
 
-      setOptimizingStatus(
-        `✅ ¡${result.totalBatches} tandas organizadas desde tu GPS! Capacidad máx: ${maxCapacity} paqs/tanda.`
+      playCashRegisterSuccess();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([60, 40, 60]);
+      }
+
+      const strategyNames: Record<RoutingStrategy, string> = {
+        nearest_first: 'De más cerca a más lejos 🚀',
+        furthest_first: 'De más lejos a más cerca 🔄',
+        snake_neighborhood: 'Serpiente / Vecindario 🐍'
+      };
+
+      toast.success(
+        `✅ Ruta Optimizada: ${strategyNames[strategy]}`,
+        `NODO 0 fijado en tu GPS actual (${coords.lat}, ${coords.lng}).`
       );
       setOptimizeReady(true);
-      toast.success(
-        `🛵 ${result.totalBatches} Tandas de Moto Calculadas`,
-        `Iniciando en tu ubicación real • ${result.isolatedPackages.length} alertas de paquetes aislados.`
-      );
-      setTimeout(() => setOptimizeReady(false), 2000);
+      setTimeout(() => setOptimizeReady(false), 2500);
     } catch {
-      toast.error('Error calculando las tandas de moto');
+      toast.error('Error calculando la ruta con la estrategia seleccionada');
     } finally {
       setIsOptimizing(false);
-      setTimeout(() => setOptimizingStatus(''), 4500);
+      setOptimizingStatus('');
     }
   };
 
@@ -130,6 +184,19 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
       `🔄 Paquete #${pkg.lastFourDigits} Reincorporado a la Ruta`,
       `Reasignado a Tanda ${targetBatch} listo para entregar.`
     );
+  };
+
+  const handleCopyAddress = async (addr: string) => {
+    if (!addr) return;
+    try {
+      await navigator.clipboard.writeText(addr);
+      toast.success('✅ Dirección copiada al portapapeles', addr);
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+    } catch {
+      toast.info('📋 Dirección seleccionada', addr);
+    }
   };
 
   const handleFinishCurrentBatch = async (batchNum: number) => {
@@ -264,27 +331,27 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
           </button>
         </div>
 
-        {/* Botón Principal: ⚡ Optimizar y Particionar en Tandas Geográficas */}
+        {/* Botón Principal: ⚡ Optimizar y Particionar en Tandas Geográficas con Estrategia GPS */}
         <button
           type="button"
           disabled={isOptimizing || packages.length === 0}
-          onClick={handleAutoBatchOptimize}
+          onClick={handleOpenRouteConfig}
           className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 disabled:opacity-50 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xl shadow-amber-500/25 active:scale-[0.99] transition-all cursor-pointer"
         >
           {isOptimizing ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin text-slate-950 shrink-0" />
-              <span>AGRUPANDO TANDAS POR PROXIMIDAD RADIAL...</span>
+              <span>CALCULANDO RUTA Y TANDAS DESDE TU GPS...</span>
             </>
           ) : optimizeReady ? (
             <>
               <CheckCircle2 className="w-5 h-5 text-slate-950 shrink-0" />
-              <span>✅ ¡TANDAS Y SERPIENTE OPTIMIZADAS!</span>
+              <span>✅ ¡RUTA OPTIMIZADA CON ÉXITO!</span>
             </>
           ) : (
             <>
-              <Layers className="w-5 h-5 text-slate-950 shrink-0" />
-              <span>⚡ ORGANIZAR TANDAS EN MOTO (CERO DESVÍOS LARGOS)</span>
+              <Compass className="w-5 h-5 text-slate-950 shrink-0" />
+              <span>⚡ OPTIMIZAR / ORDENAR PEDIDOS (ESTRATEGIA GPS)</span>
             </>
           )}
         </button>
@@ -440,11 +507,11 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
 
           <button
             type="button"
-            onClick={() => openWazeNavigation(nextPendingPkg.rawAddress, nextPendingPkg.coordinates)}
+            onClick={() => handleCopyAddress(nextPendingPkg.rawAddress)}
             className="py-2.5 px-3.5 rounded-2xl bg-white hover:bg-sky-50 text-slate-950 font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-lg active:scale-95 transition-all shrink-0 cursor-pointer"
           >
-            <Navigation className="w-4 h-4 fill-sky-600 text-sky-600 shrink-0" />
-            <span>🧭 Navegar en Waze</span>
+            <Copy className="w-4 h-4 text-blue-600 shrink-0" />
+            <span>📋 Copiar Dirección</span>
           </button>
         </div>
       )}
@@ -615,12 +682,12 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => openWazeNavigation(pkg.rawAddress, pkg.coordinates)}
-                          className="py-1 px-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] flex items-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer"
-                          title="Navegar directo con Waze"
+                          onClick={() => handleCopyAddress(pkg.rawAddress)}
+                          className="py-1 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-[11px] flex items-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer"
+                          title="Copiar dirección al portapapeles"
                         >
-                          <Navigation className="w-3.5 h-3.5 fill-slate-950 shrink-0" />
-                          <span>🧭 Navegar en Waze</span>
+                          <Copy className="w-3.5 h-3.5 shrink-0" />
+                          <span>📋 Copiar Dirección</span>
                         </button>
 
                         <a
@@ -691,6 +758,145 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* MODAL DE CONFIGURACIÓN DE RUTA PRE-CONDICIONADA v10.0 */}
+      {showRouteConfigModal && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-3 sm:p-4 touch-scroll-y">
+          <div
+            className={`w-full max-w-md rounded-3xl border p-5 shadow-2xl space-y-4 max-h-[90dvh] touch-scroll-y my-auto ${
+              highContrastSun
+                ? 'bg-white border-slate-300 text-slate-950'
+                : 'bg-slate-900 border-slate-800 text-slate-100'
+            }`}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-2xl bg-amber-500 text-slate-950 font-black">
+                  <Compass className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-amber-400">
+                    Configuración de Ruta
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    NODO 0 anclado en tu GPS actual
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRouteConfigModal(false)}
+                className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Estado GPS en vivo */}
+            <div
+              className={`p-3 rounded-2xl border-2 flex items-center gap-3 ${
+                gpsStatus === 'locating'
+                  ? 'bg-blue-950/60 border-blue-500 text-blue-200 animate-pulse'
+                  : 'bg-emerald-950/60 border-emerald-500 text-emerald-200'
+              }`}
+            >
+              {gpsStatus === 'locating' ? (
+                <>
+                  <Loader2 className="w-5 h-5 text-blue-400 animate-spin shrink-0" />
+                  <div className="text-xs font-bold">
+                    <p className="font-black text-blue-300">
+                      📍 Obteniendo tu ubicación actual por GPS...
+                    </p>
+                    <p className="text-[11px] text-blue-200/80 mt-0.5">
+                      Fijando el punto 0 exacto donde estás parado con la moto
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <div className="text-xs font-bold">
+                    <p className="font-black text-emerald-300">
+                      ✅ Ubicación GPS lista como NODO 0
+                    </p>
+                    <p className="text-[11px] font-mono text-emerald-200/80 mt-0.5">
+                      Lat: {userCoords?.lat.toFixed(5)} • Lng: {userCoords?.lng.toFixed(5)}
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Opciones de Estrategia */}
+            <div className="space-y-2.5">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wide block">
+                Selecciona tu Estrategia de Ruteo:
+              </span>
+
+              {/* 1. De más cerca a más lejos */}
+              <button
+                type="button"
+                disabled={gpsStatus === 'locating'}
+                onClick={() => handleSelectStrategy('nearest_first')}
+                className="w-full p-3.5 rounded-2xl bg-slate-850 hover:bg-slate-800 border-2 border-slate-700 hover:border-emerald-500 text-left transition-all active:scale-[0.98] disabled:opacity-50 flex items-start gap-3 cursor-pointer group"
+              >
+                <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-xl shrink-0 group-hover:scale-105 transition-transform">
+                  🚀
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-white group-hover:text-emerald-300">
+                    De más cerca a más lejos
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-0.5 leading-snug">
+                    Prioriza vaciar carga rápido cerca de tu posición inicial actual.
+                  </p>
+                </div>
+              </button>
+
+              {/* 2. De más lejos a más cerca */}
+              <button
+                type="button"
+                disabled={gpsStatus === 'locating'}
+                onClick={() => handleSelectStrategy('furthest_first')}
+                className="w-full p-3.5 rounded-2xl bg-slate-850 hover:bg-slate-800 border-2 border-slate-700 hover:border-blue-500 text-left transition-all active:scale-[0.98] disabled:opacity-50 flex items-start gap-3 cursor-pointer group"
+              >
+                <div className="p-2.5 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/40 text-xl shrink-0 group-hover:scale-105 transition-transform">
+                  🔄
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-white group-hover:text-blue-300">
+                    De más lejos a más cerca
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-0.5 leading-snug">
+                    Empieza por el punto más distante y viene regresando hacia casa.
+                  </p>
+                </div>
+              </button>
+
+              {/* 3. Serpiente / Vecindario */}
+              <button
+                type="button"
+                disabled={gpsStatus === 'locating'}
+                onClick={() => handleSelectStrategy('snake_neighborhood')}
+                className="w-full p-3.5 rounded-2xl bg-slate-850 hover:bg-slate-800 border-2 border-slate-700 hover:border-amber-500 text-left transition-all active:scale-[0.98] disabled:opacity-50 flex items-start gap-3 cursor-pointer group"
+              >
+                <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/40 text-xl shrink-0 group-hover:scale-105 transition-transform">
+                  🐍
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-white group-hover:text-amber-300">
+                    Serpiente / Vecindario
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-0.5 leading-snug">
+                    Agrupación estricta por cuadras, sin importar distancia total, ideal para tandas muy densas.
+                  </p>
+                </div>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

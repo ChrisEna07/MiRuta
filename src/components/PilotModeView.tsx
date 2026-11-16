@@ -20,7 +20,8 @@ import {
   Fuel,
   Coffee,
   Package as PkgIcon,
-  X
+  X,
+  Copy
 } from 'lucide-react';
 import {
   db,
@@ -37,7 +38,6 @@ import {
   buildWhatsAppPreNoticeUrl,
   buildArrivalWhatsAppUrl,
   buildNavigationLinks,
-  openWazeNavigation,
   formatCOP
 } from '../utils/mediaAndFeedback';
 import { detectSameBlockClusters } from '../utils/addressParser';
@@ -130,9 +130,10 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
   const grossEarnedCOP = deliveredPkgs.reduce((acc, p) => acc + (p.rate || defaultRate), 0);
 
   const activeHours = activeDurationMs / 3600000;
-  const pacePerHour = activeHours >= 0.05
-    ? (deliveredCount / activeHours).toFixed(1)
-    : (deliveredCount > 0 ? String(deliveredCount) : '0.0');
+  const roundedPacePerHour = activeHours >= 0.05
+    ? Math.round(deliveredCount / activeHours)
+    : deliveredCount;
+  const pacePerHour = String(roundedPacePerHour);
 
   const handleStartShift = async () => {
     const s = await ensureShiftExists(todayShiftId);
@@ -244,6 +245,19 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
       toast.info('⏱️ Cronómetro de Puerta Iniciado', 'Límite sugerido: 3 minutos.');
     }
     setShowArrivalActions((prev) => !prev);
+  };
+
+  const handleCopyAddress = async (addr: string) => {
+    if (!addr) return;
+    try {
+      await navigator.clipboard.writeText(addr);
+      toast.success('✅ Dirección copiada al portapapeles', addr);
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+    } catch {
+      toast.info('📋 Dirección seleccionada', addr);
+    }
   };
 
   const handleResetDoorTimer = async () => {
@@ -527,112 +541,182 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
     );
   };
 
-  const renderCloseShiftModal = () => (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-3 sm:p-4 touch-scroll-y">
-      <div
-        className={`w-full max-w-md rounded-3xl border p-5 space-y-3.5 max-h-[90dvh] touch-scroll-y my-auto shadow-2xl ${
-          highContrastSun
-            ? 'bg-white border-slate-300 text-slate-950'
-            : 'bg-slate-900 border-slate-800 text-slate-100'
-        }`}
-      >
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-black flex items-center gap-2 text-amber-400">
-            <Flag className="w-5 h-5" />
-            <span>🏁 Cierre y Fin de Jornada</span>
-          </h3>
-          <button
-            type="button"
-            onClick={() => setShowCloseShiftModal(false)}
-            className="p-1 rounded-lg text-slate-400 hover:text-white"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+  const renderCloseShiftModal = () => {
+    const effectiveHours = activeDurationMs / 3600000;
+    const roundedPaceInt = effectiveHours >= 0.05
+      ? Math.round(deliveredCount / effectiveHours)
+      : deliveredCount;
 
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400">ENTREGAS HOY</span>
-            <p className="text-base font-black text-emerald-400 mt-0.5">
-              {deliveredCount} paqs (+{formatCOP(grossEarnedCOP)})
-            </p>
-          </div>
-          <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400">TIEMPO EFECTIVO</span>
-            <p className="text-base font-black text-white mt-0.5">
-              {formatStopwatch(activeDurationMs)}
-            </p>
-          </div>
-        </div>
+    let evalColor = highContrastSun
+      ? 'bg-rose-100 border-2 border-rose-600 text-rose-950'
+      : 'bg-rose-950/90 border-2 border-rose-500 text-rose-200';
+    let evalText =
+      '❌ Rendimiento muy por debajo de lo rentable. A este ritmo no lograrás la meta quincenal. Te aconsejo seriamente no seguir desgastándote en esto y enfocarte 100% en tu trabajo principal y tus prácticas de desarrollo.';
 
-        <div>
-          <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1 mb-1">
-            <Fuel className="w-3.5 h-3.5 text-amber-400" />
-            Gasto de Gasolina del Día ($ COP)
-          </label>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={closingFuelInput}
-            onChange={(e) => setClosingFuelInput(e.target.value)}
-            placeholder="12000"
-            className="w-full rounded-xl px-3 py-2 text-sm font-mono font-bold bg-slate-950 border border-slate-700 text-white"
-          />
-        </div>
+    if (roundedPaceInt >= 10) {
+      evalColor = highContrastSun
+        ? 'bg-emerald-100 border-2 border-emerald-600 text-emerald-950'
+        : 'bg-emerald-950/90 border-2 border-emerald-500 text-emerald-200';
+      evalText =
+        '✅ Jornada Óptima. Estás cumpliendo el ritmo. Vas seguro hacia la meta de los $600.000 COP.';
+    } else if (roundedPaceInt >= 7) {
+      evalColor = highContrastSun
+        ? 'bg-amber-100 border-2 border-amber-600 text-amber-950'
+        : 'bg-amber-950/90 border-2 border-amber-500 text-amber-200';
+      evalText =
+        '⚠️ Jornada Regular. Toca esforzarse más y agilizar el tiempo en las puertas si quieres alcanzar la meta.';
+    }
 
-        <div>
-          <label className="text-[11px] font-bold text-slate-400 block mb-1">
-            ¿Qué hacer con paquetes pendientes o no entregados?
-          </label>
-          <div className="grid grid-cols-2 gap-2">
+    return (
+      <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-3 sm:p-4 touch-scroll-y">
+        <div
+          className={`w-full max-w-md rounded-3xl border p-5 space-y-3.5 max-h-[90dvh] touch-scroll-y my-auto shadow-2xl ${
+            highContrastSun
+              ? 'bg-white border-slate-300 text-slate-950'
+              : 'bg-slate-900 border-slate-800 text-slate-100'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-black flex items-center gap-2 text-amber-400">
+              <Flag className="w-5 h-5" />
+              <span>🏁 Cierre y Fin de Jornada</span>
+            </h3>
             <button
               type="button"
-              onClick={() => setClosingPendingAction('move_to_tomorrow')}
-              className={`p-2 rounded-xl text-xs font-bold border text-left cursor-pointer ${
-                closingPendingAction === 'move_to_tomorrow'
-                  ? 'bg-blue-600/30 border-blue-500 text-blue-200'
-                  : 'bg-slate-800/60 border-slate-700 text-slate-400'
-              }`}
+              onClick={() => setShowCloseShiftModal(false)}
+              className="p-1 rounded-lg text-slate-400 hover:text-white"
             >
-              <p className="font-black text-white">📦 Mover a Mañana</p>
-              <p className="text-[10px]">Pasan a la ruta de mañana</p>
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* 4 Métricas Clave de la Jornada (v10.0) */}
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            {/* 1. Horas trabajadas (Tiempo activo real, descontando pausas) */}
+            <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 block">HORAS TRABAJADAS</span>
+              <p className="text-base font-black text-white mt-0.5 font-mono">
+                {formatStopwatch(activeDurationMs)}
+              </p>
+              <span className="text-[9px] text-slate-400">
+                ({effectiveHours.toFixed(1)} h tiempo activo real)
+              </span>
+            </div>
+
+            {/* 2. Pausas totales */}
+            <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 block">TIEMPO EN PAUSAS</span>
+              <p className="text-base font-black text-amber-400 mt-0.5 font-mono">
+                {formatStopwatch(totalPausedMs)}
+              </p>
+              <span className="text-[9px] text-slate-400">
+                (Gasolina, lluvia o bodega)
+              </span>
+            </div>
+
+            {/* 3. Ganancia del turno */}
+            <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 block">GANANCIA DEL TURNO</span>
+              <p className="text-base font-black text-emerald-400 mt-0.5 font-mono">
+                +{formatCOP(grossEarnedCOP)}
+              </p>
+              <span className="text-[9px] text-slate-400">
+                {deliveredCount} entregas completadas
+              </span>
+            </div>
+
+            {/* 4. Promedio Paquetes/Hora (Entero Redondeado) */}
+            <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 block">RITMO PAQ/HORA</span>
+              <p className="text-xl font-black text-blue-400 mt-0.5 font-mono">
+                {roundedPaceInt} <span className="text-xs font-bold text-slate-400">paq/h</span>
+              </p>
+              <span className="text-[9px] font-bold text-amber-300">
+                Meta: 10 paq/h
+              </span>
+            </div>
+          </div>
+
+          {/* Evaluación Comparativa (Mensaje Honesto y Fuerte) v10.0 */}
+          <div className={`p-3.5 rounded-2xl border-2 space-y-1.5 shadow-lg ${evalColor}`}>
+            <div className="flex items-center justify-between text-xs font-black uppercase">
+              <span>Evaluación de Desempeño ({roundedPaceInt} / 10 paq/h)</span>
+              <span>Meta $600k COP</span>
+            </div>
+            <p className="text-xs sm:text-sm font-black leading-snug">
+              {evalText}
+            </p>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1 mb-1">
+              <Fuel className="w-3.5 h-3.5 text-amber-400" />
+              Gasto de Gasolina del Día ($ COP)
+            </label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={closingFuelInput}
+              onChange={(e) => setClosingFuelInput(e.target.value)}
+              placeholder="12000"
+              className="w-full rounded-xl px-3 py-2 text-sm font-mono font-bold bg-slate-950 border border-slate-700 text-white"
+            />
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-slate-400 block mb-1">
+              ¿Qué hacer con paquetes pendientes o no entregados?
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setClosingPendingAction('move_to_tomorrow')}
+                className={`p-2 rounded-xl text-xs font-bold border text-left cursor-pointer ${
+                  closingPendingAction === 'move_to_tomorrow'
+                    ? 'bg-blue-600/30 border-blue-500 text-blue-200'
+                    : 'bg-slate-800/60 border-slate-700 text-slate-400'
+                }`}
+              >
+                <p className="font-black text-white">📦 Mover a Mañana</p>
+                <p className="text-[10px]">Pasan a la ruta de mañana</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setClosingPendingAction('mark_returned_to_warehouse')}
+                className={`p-2 rounded-xl text-xs font-bold border text-left cursor-pointer ${
+                  closingPendingAction === 'mark_returned_to_warehouse'
+                    ? 'bg-rose-600/30 border-rose-500 text-rose-200'
+                    : 'bg-slate-800/60 border-slate-700 text-slate-400'
+                }`}
+              >
+                <p className="font-black text-white">🏭 Devolver Bodega</p>
+                <p className="text-[10px]">Registrar como novedad</p>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <button
+              type="button"
+              disabled={isClosingShift}
+              onClick={handleConfirmCloseShift}
+              className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg active:scale-95 disabled:opacity-50 cursor-pointer"
+            >
+              <Flag className="w-4 h-4" />
+              <span>{isClosingShift ? 'Cerrando...' : 'Confirmar Cierre de Jornada'}</span>
             </button>
             <button
               type="button"
-              onClick={() => setClosingPendingAction('mark_returned_to_warehouse')}
-              className={`p-2 rounded-xl text-xs font-bold border text-left cursor-pointer ${
-                closingPendingAction === 'mark_returned_to_warehouse'
-                  ? 'bg-rose-600/30 border-rose-500 text-rose-200'
-                  : 'bg-slate-800/60 border-slate-700 text-slate-400'
-              }`}
+              onClick={() => setShowCloseShiftModal(false)}
+              className="py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs"
             >
-              <p className="font-black text-white">🏭 Devolver Bodega</p>
-              <p className="text-[10px]">Registrar como novedad</p>
+              Cancelar
             </button>
           </div>
-        </div>
-
-        <div className="flex gap-2 pt-2">
-          <button
-            type="button"
-            disabled={isClosingShift}
-            onClick={handleConfirmCloseShift}
-            className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg active:scale-95 disabled:opacity-50 cursor-pointer"
-          >
-            <Flag className="w-4 h-4" />
-            <span>{isClosingShift ? 'Cerrando...' : 'Confirmar Cierre de Jornada'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowCloseShiftModal(false)}
-            className="py-3 px-4 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs cursor-pointer"
-          >
-            Cancelar
-          </button>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   if (!currentPkg) {
     const totalEarned = deliveredPkgs.reduce((acc, p) => acc + (p.rate || defaultRate), 0);
@@ -788,16 +872,16 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
           </div>
         </div>
 
-        {/* Lanzador Directo de Navegación y Llegada: Waze + "Ya estoy acá" (v9.5) */}
+        {/* Lanzador Directo de Navegación y Llegada: Copiar Dirección + "Ya estoy acá" (v10.0) */}
         <div className="mt-3.5 space-y-2">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={() => openWazeNavigation(currentPkg.rawAddress, currentPkg.coordinates)}
-              className="w-full py-3.5 px-3 rounded-2xl bg-gradient-to-r from-sky-500 via-sky-400 to-cyan-400 hover:from-sky-400 hover:to-cyan-300 text-slate-950 font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-sky-500/25 active:scale-[0.98] transition-all cursor-pointer border-2 border-sky-200"
+              onClick={() => handleCopyAddress(currentPkg.rawAddress)}
+              className="w-full py-3.5 px-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-sm flex items-center justify-center gap-2 shadow-xl shadow-blue-500/25 active:scale-[0.98] transition-all cursor-pointer border-2 border-blue-400"
             >
-              <Navigation className="w-5 h-5 fill-slate-950 shrink-0" />
-              <span>🧭 NAVEGAR EN WAZE</span>
+              <Copy className="w-5 h-5 shrink-0" />
+              <span>📋 COPIAR DIRECCIÓN</span>
             </button>
 
             <button
@@ -889,15 +973,14 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
               <span>Google Maps</span>
             </a>
 
-            <a
-              href={navLinks.wazeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="py-2.5 px-3 rounded-xl bg-sky-950/60 hover:bg-sky-900/60 text-sky-300 font-bold text-xs flex items-center justify-center gap-1.5 border border-sky-500/40 active:scale-95 transition-all"
+            <button
+              type="button"
+              onClick={() => handleCopyAddress(currentPkg.rawAddress)}
+              className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5 border border-slate-700 active:scale-95 transition-all cursor-pointer"
             >
-              <Navigation className="w-3.5 h-3.5 fill-sky-300 shrink-0" />
-              <span>Web Waze</span>
-            </a>
+              <Copy className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>Copiar Texto</span>
+            </button>
           </div>
         </div>
 

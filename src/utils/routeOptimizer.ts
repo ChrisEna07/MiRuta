@@ -2,6 +2,7 @@ import { type DeliveryPackage, db } from '../db/database';
 import { parseMedellinAddress } from './addressParser';
 
 export type SweepDirection = 'asc' | 'desc' | 'snake';
+export type RoutingStrategy = 'nearest_first' | 'furthest_first' | 'snake_neighborhood';
 
 /**
  * Convierte cualquier nomenclatura vial de Medellín a un eje estandarizado:
@@ -303,6 +304,222 @@ export function solveTSPNearestNeighbor2Opt(
   }
 
   return [...orderedNodes.map((n) => ({ ...n.pkg, coordinates: n.coords })), ...completed];
+}
+
+function applyTwoOptRefinement(
+  orderedNodes: Array<{ pkg: DeliveryPackage; coords: { lat: number; lng: number } }>,
+  startCoords: { lat: number; lng: number }
+) {
+  let improved = true;
+  let iterations = 0;
+  while (improved && iterations < 35) {
+    improved = false;
+    iterations++;
+    for (let i = 0; i < orderedNodes.length - 2; i++) {
+      for (let k = i + 2; k < orderedNodes.length; k++) {
+        if (orderedNodes[i].pkg.parsedAddress?.blockKey === orderedNodes[i + 1].pkg.parsedAddress?.blockKey) {
+          continue;
+        }
+        const prevPoint = i === 0 ? startCoords : orderedNodes[i - 1].coords;
+        const a = orderedNodes[i].coords;
+        const b = orderedNodes[k].coords;
+        const nextPoint = k + 1 < orderedNodes.length ? orderedNodes[k + 1].coords : null;
+
+        const currentCost =
+          haversineDistanceKm(prevPoint, a) +
+          (nextPoint ? haversineDistanceKm(b, nextPoint) : 0);
+        const swappedCost =
+          haversineDistanceKm(prevPoint, b) +
+          (nextPoint ? haversineDistanceKm(a, nextPoint) : 0);
+
+        if (swappedCost + 0.005 < currentCost) {
+          const reversed = orderedNodes.slice(i, k + 1).reverse();
+          orderedNodes.splice(i, k - i + 1, ...reversed);
+          improved = true;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Enrutamiento Pre-Condicionado v10.0:
+ * NODO 0 Obligatorio = Ubicación GPS actual de la moto (lat/lng exactas de Christian).
+ * Aplica 3 estrategias manuales seleccionadas por el repartidor.
+ */
+export function optimizeRouteWithStrategy(
+  packages: DeliveryPackage[],
+  userGPS: { lat: number; lng: number },
+  strategy: RoutingStrategy
+): DeliveryPackage[] {
+  const active = packages.filter((p) => p.status === 'pending' || p.status === 'in_progress');
+  const completed = packages.filter((p) => p.status !== 'pending' && p.status !== 'in_progress');
+
+  if (active.length <= 1) {
+    return [...active, ...completed];
+  }
+
+  // Asegurar coordenadas estimadas/reales
+  const nodes = active.map((pkg) => ({
+    pkg,
+    coords: pkg.coordinates || estimateMedellinCoordinatesFromAddress(pkg)
+  }));
+
+  const orderedNodes: typeof nodes = [];
+
+  if (strategy === 'nearest_first') {
+    // 🚀 De más cerca a más lejos: NODO 0 = userGPS. Voraz hacia afuera + 2-opt
+    const visited = new Set<number>();
+    let currentPos = userGPS;
+
+    while (orderedNodes.length < nodes.length) {
+      let bestIdx = -1;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < nodes.length; i++) {
+        if (visited.has(i)) continue;
+        const d = haversineDistanceKm(currentPos, nodes[i].coords);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+
+      if (bestIdx === -1) break;
+      visited.add(bestIdx);
+      const chosen = nodes[bestIdx];
+      orderedNodes.push(chosen);
+      currentPos = chosen.coords;
+
+      // Mantener paquetes de la misma cuadra pegados
+      for (let j = 0; j < nodes.length; j++) {
+        if (!visited.has(j) && nodes[j].pkg.parsedAddress?.blockKey === chosen.pkg.parsedAddress?.blockKey) {
+          visited.add(j);
+          orderedNodes.push(nodes[j]);
+        }
+      }
+    }
+
+    applyTwoOptRefinement(orderedNodes, userGPS);
+
+  } else if (strategy === 'furthest_first') {
+    // 🔄 De más lejos a más cerca:
+    // NODO 0 = userGPS. Parada 1 es el paquete más alejado de la posición actual del usuario.
+    // Desde allá, el algoritmo avanza regresando hacia el NODO 0.
+    const visited = new Set<number>();
+
+    // 1. Encontrar el nodo más lejano respecto al GPS del usuario
+    let furthestIdx = -1;
+    let maxDistFromGPS = -1;
+    for (let i = 0; i < nodes.length; i++) {
+      const d = haversineDistanceKm(userGPS, nodes[i].coords);
+      if (d > maxDistFromGPS) {
+        maxDistFromGPS = d;
+        furthestIdx = i;
+      }
+    }
+
+    if (furthestIdx !== -1) {
+      visited.add(furthestIdx);
+      const startNode = nodes[furthestIdx];
+      orderedNodes.push(startNode);
+      let currentPos = startNode.coords;
+
+      // Misma cuadra que el primer nodo
+      for (let j = 0; j < nodes.length; j++) {
+        if (!visited.has(j) && nodes[j].pkg.parsedAddress?.blockKey === startNode.pkg.parsedAddress?.blockKey) {
+          visited.add(j);
+          orderedNodes.push(nodes[j]);
+        }
+      }
+
+      // 2. Desde el punto más distante, avanzar hacia los vecinos priorizando regresar hacia userGPS
+      while (orderedNodes.length < nodes.length) {
+        let bestIdx = -1;
+        let bestScore = Infinity;
+
+        for (let i = 0; i < nodes.length; i++) {
+          if (visited.has(i)) continue;
+          const distFromCurrent = haversineDistanceKm(currentPos, nodes[i].coords);
+          const distToUserGPS = haversineDistanceKm(nodes[i].coords, userGPS);
+          // Minimizamos distancia local al siguiente punto con sesgo de retorno al punto de inicio
+          const score = distFromCurrent * 0.75 + distToUserGPS * 0.25;
+          if (score < bestScore) {
+            bestScore = score;
+            bestIdx = i;
+          }
+        }
+
+        if (bestIdx === -1) break;
+        visited.add(bestIdx);
+        const chosen = nodes[bestIdx];
+        orderedNodes.push(chosen);
+        currentPos = chosen.coords;
+
+        // Misma cuadra pegados
+        for (let j = 0; j < nodes.length; j++) {
+          if (!visited.has(j) && nodes[j].pkg.parsedAddress?.blockKey === chosen.pkg.parsedAddress?.blockKey) {
+            visited.add(j);
+            orderedNodes.push(nodes[j]);
+          }
+        }
+      }
+    }
+
+  } else {
+    // 🐍 Serpiente / Vecindario:
+    // Agrupación estricta por cuadras / nomenclatura partiendo desde la cuadra más cercana a userGPS
+    const blockGroups = new Map<string, typeof nodes>();
+    for (const node of nodes) {
+      const bKey = node.pkg.parsedAddress?.blockKey || `single_${node.pkg.id ?? Math.random()}`;
+      if (!blockGroups.has(bKey)) {
+        blockGroups.set(bKey, []);
+      }
+      blockGroups.get(bKey)!.push(node);
+    }
+
+    // Ordenar paquetes dentro de cada cuadra por placa numérica
+    for (const group of blockGroups.values()) {
+      group.sort((a, b) => (a.pkg.parsedAddress?.plate || 0) - (b.pkg.parsedAddress?.plate || 0));
+    }
+
+    // Ordenar los bloques: empezando por el bloque más cercano a userGPS
+    const blockKeys = Array.from(blockGroups.keys());
+    const visitedBlocks = new Set<string>();
+    let currentBlockPos = userGPS;
+
+    while (visitedBlocks.size < blockKeys.length) {
+      let bestBlockKey = '';
+      let bestDist = Infinity;
+
+      for (const bKey of blockKeys) {
+        if (visitedBlocks.has(bKey)) continue;
+        const bNodes = blockGroups.get(bKey)!;
+        const center = bNodes[0].coords;
+        const d = haversineDistanceKm(currentBlockPos, center);
+        if (d < bestDist) {
+          bestDist = d;
+          bestBlockKey = bKey;
+        }
+      }
+
+      if (!bestBlockKey) break;
+      visitedBlocks.add(bestBlockKey);
+      const chosenNodes = blockGroups.get(bestBlockKey)!;
+      orderedNodes.push(...chosenNodes);
+      currentBlockPos = chosenNodes[chosenNodes.length - 1].coords;
+    }
+  }
+
+  // Devolver paquetes ordenados con número de parada actualizado
+  return [
+    ...orderedNodes.map((n, idx) => ({
+      ...n.pkg,
+      coordinates: n.coords,
+      routeOrder: idx + 1
+    })),
+    ...completed
+  ];
 }
 
 /**

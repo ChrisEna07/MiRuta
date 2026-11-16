@@ -15,6 +15,7 @@ interface IMileTodayTasksCardProps {
   packages: DeliveryPackage[];
   highContrastSun: boolean;
   onOpenScanner: () => void;
+  onOpenCheckoutScanner?: () => void;
   onOpenIssueScanner?: () => void;
   onOpenSearch?: () => void;
   onSelectFilter?: (filter: 'all' | 'pending' | 'delivered' | 'issue') => void;
@@ -24,6 +25,7 @@ export const IMileTodayTasksCard: React.FC<IMileTodayTasksCardProps> = ({
   packages,
   highContrastSun,
   onOpenScanner,
+  onOpenCheckoutScanner,
   onOpenIssueScanner,
   onOpenSearch,
   onSelectFilter,
@@ -171,21 +173,21 @@ export const IMileTodayTasksCard: React.FC<IMileTodayTasksCardProps> = ({
       <div className="space-y-2">
         <button
           type="button"
-          onClick={onOpenScanner}
-          className="w-full py-4 px-4 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-sm flex items-center justify-between shadow-xl shadow-blue-600/25 border border-blue-400/30 active:scale-[0.98] transition-all cursor-pointer"
+          onClick={onOpenCheckoutScanner || onOpenScanner}
+          className="w-full py-4 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-sm flex items-center justify-between shadow-xl shadow-emerald-600/25 border border-emerald-400/30 active:scale-[0.98] transition-all cursor-pointer"
         >
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-white/15 text-white">
+            <div className="p-2 rounded-xl bg-white/20 text-white">
               <QrCode className="w-5 h-5" />
             </div>
             <div className="text-left">
-              <p className="leading-tight">Escaneo entrega</p>
-              <p className="text-[10px] text-blue-200 font-medium">
-                Escaneo de Respaldo / Captura de Etiqueta
+              <p className="leading-tight">Escaneo entrega (Liquidación)</p>
+              <p className="text-[10px] text-emerald-100 font-medium">
+                Solo código de barras • Marca Entregado al instante
               </p>
             </div>
           </div>
-          <ChevronRight className="w-5 h-5 text-blue-200" />
+          <ChevronRight className="w-5 h-5 text-emerald-200" />
         </button>
 
         <button

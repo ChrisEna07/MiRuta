@@ -21,6 +21,7 @@ import { TraceabilityHistoryView } from './components/TraceabilityHistoryView';
 import { QuincenaAccountingView } from './components/QuincenaAccountingView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { ScannerModal } from './components/ScannerModal';
+import { DeliveryCheckoutScanner } from './components/DeliveryCheckoutScanner';
 import { ScannerTestLabModal } from './components/ScannerTestLabModal';
 import { QuickSearchModal } from './components/QuickSearchModal';
 import { FeedbackProvider } from './components/ui/FeedbackSystem';
@@ -31,6 +32,7 @@ type ActiveTab = 'pilot' | 'route' | 'quincena' | 'settings';
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('pilot');
   const [scannerOpen, setScannerOpen] = useState<boolean>(false);
+  const [checkoutScannerOpen, setCheckoutScannerOpen] = useState<boolean>(false);
   const [testLabOpen, setTestLabOpen] = useState<boolean>(false);
   const [searchModalOpen, setSearchModalOpen] = useState<boolean>(false);
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
@@ -111,6 +113,7 @@ export function App() {
                   packages={todayPackages}
                   highContrastSun={highContrastSun}
                   onOpenScanner={() => setScannerOpen(true)}
+                  onOpenCheckoutScanner={() => setCheckoutScannerOpen(true)}
                   onOpenIssueScanner={() => setScannerOpen(true)}
                   onOpenSearch={() => setSearchModalOpen(true)}
                   onSelectFilter={(filter) => {
@@ -253,6 +256,13 @@ export function App() {
             setScannerOpen(false);
             setActiveTab('route');
           }}
+          highContrastSun={highContrastSun}
+        />
+
+        {/* Modal de Escaneo de Liquidación / Salida Rápida (v10.0) */}
+        <DeliveryCheckoutScanner
+          isOpen={checkoutScannerOpen}
+          onClose={() => setCheckoutScannerOpen(false)}
           highContrastSun={highContrastSun}
         />
 
