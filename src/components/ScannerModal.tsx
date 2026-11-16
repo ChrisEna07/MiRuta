@@ -91,14 +91,29 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [smartBlockText, setSmartBlockText] = useState<string>('');
   const [editingPackageId, setEditingPackageId] = useState<number | null>(null);
 
-  // Contador de Sesión y Alerta de Capacidad de Moto v9.8
+  // Contador Global de Carga y Alerta de Capacidad de Moto v10.2
   const [sessionCount, setSessionCount] = useState<number>(0);
+  const [totalPendingCount, setTotalPendingCount] = useState<number>(0);
   const [showCapacityAlert, setShowCapacityAlert] = useState<boolean>(false);
+
+  const refreshTotalPendingCount = async () => {
+    try {
+      const all = await db.packages.toArray();
+      const count = all.filter(
+        (p) => !p.archivedInHistory && (p.status === 'pending' || p.status === 'in_progress')
+      ).length;
+      setTotalPendingCount(count);
+      return count;
+    } catch {
+      return 0;
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
       setSessionCount(0);
       setShowCapacityAlert(false);
+      refreshTotalPendingCount();
     }
   }, [isOpen]);
 
@@ -794,12 +809,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       setHasScannedAttempt(false);
       lastDecodedBarcodeRef.current = '';
 
-      // Incremento del Contador de Sesión en Vivo y Alerta de Capacidad (v9.8)
+      // Incremento del Contador de Sesión en Vivo y Total Global (v10.2)
       const nextSessionCount = sessionCount + 1;
       setSessionCount(nextSessionCount);
 
-      // Disparador a los 20 Paquetes: Interrupción controlada de capacidad de moto
-      if (nextSessionCount === 20) {
+      const newTotalPendingCount = await refreshTotalPendingCount();
+
+      // Disparador a los 20 Paquetes por Carga Total (Freno a los 20)
+      if (newTotalPendingCount === 20) {
         stopCameraScanner();
         setShowCapacityAlert(true);
         if (typeof navigator !== 'undefined' && navigator.vibrate) {
@@ -848,13 +865,13 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
                     ? 'Actualizar Guía en Ruta'
                     : '📸 Escáner Láser + IA'}
                 </h2>
-                {/* Badge Contador de Ráfaga en Vivo v9.8 */}
+                {/* Badge Contador Global de Carga y Límite Real v10.2 */}
                 <div
                   className={`px-2.5 py-0.5 rounded-full text-[11px] sm:text-xs border flex items-center gap-1 shadow-sm transition-all ${getSessionBadgeClasses(
-                    sessionCount
+                    totalPendingCount
                   )}`}
                 >
-                  <span>📦 Llevas: {sessionCount} paquetes</span>
+                  <span>📦 Carga Total: {totalPendingCount} / 20 ({sessionCount} nuevos)</span>
                 </div>
               </div>
               <p className="text-[10px] font-bold text-emerald-400 whitespace-normal break-words leading-snug mt-0.5">
@@ -1671,10 +1688,10 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
             <div className="space-y-2">
               <h3 className="text-lg font-black text-amber-400 flex items-center justify-center gap-1.5">
-                <span>⚠️ Capacidad de Moto Alcanzada</span>
+                <span>⚠️ Capacidad Máxima de Moto Alcanzada</span>
               </h3>
               <p className="text-xs sm:text-sm font-semibold text-slate-300 leading-snug">
-                Has escaneado <strong className="text-amber-300 font-black">{sessionCount} paquetes</strong>. ¿Deseas arrancar a repartir esta tanda, o seguirás escaneando para dejar una segunda tanda lista en bodega?
+                Con este paquete, tu ruta llega a <strong className="text-amber-300 font-black">20 entregas en total</strong> (contando pendientes de días anteriores). ¿Deseas enrutar y arrancar ya, o seguirás escaneando para una segunda tanda en bodega?
               </p>
             </div>
 
