@@ -112,41 +112,45 @@ export async function compressProofPhotoToBase64(file: File): Promise<string> {
 }
 
 /**
- * Construye el enlace de WhatsApp 1-Click para pre-avisar al cliente que estamos a 3-5 minutos.
+ * Saludo dinámico según la hora del día (v10.6)
+ */
+export const getDynamicGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour >= 0 && hour < 12) return "Buenos días";
+  if (hour >= 12 && hour < 18) return "Buenas tardes";
+  return "Buenas noches disculpe la hora";
+};
+
+/**
+ * Construye el enlace de WhatsApp 1-Click para pre-avisar al cliente ("Voy en camino").
  */
 export function buildWhatsAppPreNoticeUrl(pkg: DeliveryPackage): string {
-  const clientName = pkg.recipientName?.trim() || 'Cliente';
-  const last4 = pkg.lastFourDigits || pkg.trackingNumber.slice(-4);
-  const address = pkg.rawAddress;
-
-  const message = `¡Hola ${clientName}! Soy el repartidor de iMile con tu paquete de Shein/Temu (Guía terminada en *${last4}*). Estoy a 3-5 minutos de llegar a *${address}*. Por favor ten a la mano quien reciba para agilizar la entrega. ¡Gracias!`;
-
   const phone = (pkg.recipientPhone || '').replace(/\D/g, '');
-  const cleanPhone = phone.startsWith('57') ? phone : phone ? `57${phone}` : '';
+  const cleanPhone = phone.startsWith('57') && phone.length === 12
+    ? phone.slice(2)
+    : phone;
 
+  const text = `${getDynamicGreeting()}, voy en camino con su paquete. ¿Me confirma si hay alguien para recibirlo en la dirección?`;
   if (cleanPhone.length >= 10) {
-    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+    return `https://wa.me/57${cleanPhone}?text=${encodeURIComponent(text)}`;
   }
-  return `https://wa.me/?text=${encodeURIComponent(message)}`;
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
 /**
  * Enlace de WhatsApp "Ya estoy acá" al llegar a la puerta del cliente.
  */
 export function buildArrivalWhatsAppUrl(pkg: DeliveryPackage): string {
-  const clientName = pkg.recipientName?.trim() || 'Cliente';
-  const last4 = pkg.lastFourDigits || pkg.trackingNumber.slice(-4);
-  const address = pkg.rawAddress;
-
-  const message = `¡Hola ${clientName}! Ya estoy afuera en tu puerta en *${address}* con tu paquete de Shein/Temu (Guía *#${last4}*). Por favor sal a recibirlo para entregártelo de inmediato. ¡Gracias!`;
-
   const phone = (pkg.recipientPhone || '').replace(/\D/g, '');
-  const cleanPhone = phone.startsWith('57') ? phone : phone ? `57${phone}` : '';
+  const cleanPhone = phone.startsWith('57') && phone.length === 12
+    ? phone.slice(2)
+    : phone;
 
+  const text = `${getDynamicGreeting()}, ya llegue al punto de entrega que indica la direccion me puede recibir?`;
   if (cleanPhone.length >= 10) {
-    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+    return `https://wa.me/57${cleanPhone}?text=${encodeURIComponent(text)}`;
   }
-  return `https://wa.me/?text=${encodeURIComponent(message)}`;
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
 }
 
 /**

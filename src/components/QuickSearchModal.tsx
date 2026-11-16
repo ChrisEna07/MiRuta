@@ -20,6 +20,8 @@ interface QuickSearchModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectPackage?: (pkg: DeliveryPackage) => void;
+  setFocusedPackageId?: (id: string | null) => void;
+  setActiveTab?: (tab: 'pilot' | 'route' | 'quincena' | 'settings') => void;
   highContrastSun?: boolean;
 }
 
@@ -27,10 +29,25 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
   isOpen,
   onClose,
   onSelectPackage,
+  setFocusedPackageId,
+  setActiveTab,
   highContrastSun = false,
 }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleSelectResult = (pkg: DeliveryPackage) => {
+    if (setFocusedPackageId) {
+      setFocusedPackageId(pkg.trackingNumber);
+    }
+    if (setActiveTab) {
+      setActiveTab('route');
+    }
+    onClose();
+    if (onSelectPackage) {
+      onSelectPackage(pkg);
+    }
+  };
 
   // Consulta en vivo reactiva a IndexedDB
   const allPackages = useLiveQuery(() => db.packages.toArray(), []) || [];
@@ -144,7 +161,8 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
               return (
                 <div
                   key={pkg.id ?? pkg.trackingNumber}
-                  className={`p-3 rounded-2xl border transition-all ${
+                  onClick={() => handleSelectResult(pkg)}
+                  className={`p-3 rounded-2xl border transition-all cursor-pointer ${
                     isDelivered
                       ? 'bg-slate-950/40 border-emerald-950/60 opacity-80'
                       : isIssue
@@ -203,7 +221,10 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
                     <div className="shrink-0 flex flex-col items-end gap-1.5">
                       <button
                         type="button"
-                        onClick={() => openWazeNavigation(pkg.rawAddress, pkg.coordinates)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openWazeNavigation(pkg.rawAddress, pkg.coordinates);
+                        }}
                         className="py-1 px-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-black text-[11px] flex items-center gap-1 shadow-sm active:scale-95 transition-all cursor-pointer"
                         title="Navegar en Waze"
                       >
@@ -211,19 +232,17 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
                         <span>Waze</span>
                       </button>
 
-                      {onSelectPackage && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onSelectPackage(pkg);
-                            onClose();
-                          }}
-                          className="py-1 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] flex items-center gap-0.5 border border-slate-700 active:scale-95 cursor-pointer"
-                        >
-                          <span>Ver</span>
-                          <ArrowRight className="w-3 h-3" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectResult(pkg);
+                        }}
+                        className="py-1 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] flex items-center gap-0.5 border border-slate-700 active:scale-95 cursor-pointer"
+                      >
+                        <span>Ver Ficha</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
                     </div>
                   </div>
                 </div>

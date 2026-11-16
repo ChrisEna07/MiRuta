@@ -31,6 +31,7 @@ type ActiveTab = 'pilot' | 'route' | 'quincena' | 'settings';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('pilot');
+  const [focusedPackageId, setFocusedPackageId] = useState<string | null>(null);
   const [scannerOpen, setScannerOpen] = useState<boolean>(false);
   const [checkoutScannerOpen, setCheckoutScannerOpen] = useState<boolean>(false);
   const [testLabOpen, setTestLabOpen] = useState<boolean>(false);
@@ -147,6 +148,8 @@ export function App() {
                   packages={todayPackages}
                   highContrastSun={highContrastSun}
                   onOpenScanner={() => setScannerOpen(true)}
+                  focusedPackageId={focusedPackageId}
+                  setFocusedPackageId={setFocusedPackageId}
                 />
               </motion.div>
             )}
@@ -211,16 +214,16 @@ export function App() {
           </AnimatePresence>
         </main>
 
-        {/* Modal de Búsqueda Reactiva Rápida de Guías (v9.0) */}
+        {/* Modal de Búsqueda Reactiva Rápida de Guías (v9.0 / v10.6) */}
         <QuickSearchModal
           isOpen={searchModalOpen}
           onClose={() => setSearchModalOpen(false)}
+          setFocusedPackageId={setFocusedPackageId}
+          setActiveTab={setActiveTab}
           onSelectPackage={(pkg) => {
-            if (pkg.status === 'pending' || pkg.status === 'in_progress') {
-              setActiveTab('pilot');
-            } else {
-              setActiveTab('route');
-            }
+            setFocusedPackageId(pkg.trackingNumber);
+            setActiveTab('route');
+            setSearchModalOpen(false);
           }}
           highContrastSun={highContrastSun}
         />

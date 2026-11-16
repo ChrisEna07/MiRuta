@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Zap,
   Compass,
@@ -45,20 +45,39 @@ import {
 } from '../services/BatchStagingManager';
 import { seedMedellinDemoBatch } from '../utils/demoSeeder';
 import { useToast, useConfirm } from './ui/FeedbackSystem';
+import { PackageDetailsModal } from './PackageDetailsModal';
 
 interface RouteOptimizerViewProps {
   packages: DeliveryPackage[];
   highContrastSun: boolean;
   onOpenScanner: () => void;
+  focusedPackageId?: string | null;
+  setFocusedPackageId?: (id: string | null) => void;
 }
 
 export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
   packages,
   highContrastSun,
   onOpenScanner,
+  focusedPackageId,
+  setFocusedPackageId,
 }) => {
   const toast = useToast();
   const { confirm } = useConfirm();
+  const [selectedPackage, setSelectedPackage] = useState<DeliveryPackage | null>(null);
+
+  // Auto-apertura de tarjeta desde búsqueda (v10.6)
+  useEffect(() => {
+    if (focusedPackageId) {
+      const pkgToFocus = packages.find((p) => p.trackingNumber === focusedPackageId);
+      if (pkgToFocus) {
+        setSelectedPackage(pkgToFocus);
+        if (setFocusedPackageId) {
+          setFocusedPackageId(null);
+        }
+      }
+    }
+  }, [focusedPackageId, packages, setFocusedPackageId]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sweepDirection, setSweepDirection] = useState<SweepDirection>('snake');
   const [primaryAxis, setPrimaryAxis] = useState<'CR' | 'CL'>('CR');
@@ -690,6 +709,15 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
                           <span>📋 Copiar Dirección</span>
                         </button>
 
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPackage(pkg)}
+                          className="py-1 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-[11px] flex items-center gap-1 border border-slate-700 active:scale-95 cursor-pointer"
+                          title="Ver ficha completa y WhatsApp"
+                        >
+                          <span>Ver Ficha</span>
+                        </button>
+
                         <a
                           href={buildNavigationLinks(pkg).googleMapsUrl}
                           target="_blank"
@@ -899,6 +927,16 @@ export const RouteOptimizerView: React.FC<RouteOptimizerViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal de Ficha y Detalles del Paquete v10.6 */}
+      <PackageDetailsModal
+        isOpen={Boolean(selectedPackage)}
+        packageData={selectedPackage}
+        onClose={() => setSelectedPackage(null)}
+        onPinAsNextStop={handlePinAsNextStop}
+        onRetryNovelty={handleRetryNoveltyPackage}
+        highContrastSun={highContrastSun}
+      />
     </div>
   );
 };
