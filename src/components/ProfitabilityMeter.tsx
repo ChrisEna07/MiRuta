@@ -177,44 +177,44 @@ export const ProfitabilityMeter: React.FC<ProfitabilityMeterProps> = ({
       };
     }
 
-    if (packagesPerHour >= 10 || netProfitPerHour > 18000) {
+    if (packagesPerHour >= 6.5 || netProfitPerHour > 13000) {
       return {
         level: 'green',
-        badge: '🟢 RITMO ÓPTIMO (10+ PAQ/H)',
+        badge: '🟢 RITMO ÓPTIMO (6.5+ PAQ/H)',
         badgeBg: 'bg-emerald-600 text-white',
         bgClass: highContrastSun
           ? 'bg-emerald-100 border-emerald-600 text-emerald-950'
           : 'bg-emerald-950/60 border-emerald-500/50 text-emerald-200',
         message:
-          '🔥 ¡Ritmo impecable! Estás entregando a más de 10 paquetes por hora (~6 min o menos por entrega). A este ritmo aseguras la meta quincenal de $600.000 COP con máxima eficiencia de gasolina.'
+          '🔥 ¡Excelente ritmo de noche! Estás entregando a más de 6.5 paq/h (~20 paquetes en 3h). Mantén este paso en la semana y complementa el fin de semana, vas perfecto para los $600.000 COP.'
       };
     }
 
     if (
-      (packagesPerHour >= 6 && packagesPerHour < 10) ||
-      (netProfitPerHour >= 10000 && netProfitPerHour <= 18000) ||
+      (packagesPerHour >= 4.5 && packagesPerHour < 6.5) ||
+      (netProfitPerHour >= 8000 && netProfitPerHour <= 13000) ||
       activeHours < 1
     ) {
       return {
         level: 'yellow',
-        badge: '🟡 RITMO AJUSTADO (6 - 10 PAQ/H)',
+        badge: '🟡 RITMO REGULAR (4.5 - 6.4 PAQ/H)',
         badgeBg: 'bg-amber-500 text-slate-950',
         bgClass: highContrastSun
           ? 'bg-amber-100 border-amber-600 text-amber-950'
           : 'bg-amber-950/60 border-amber-500/50 text-amber-200',
         message:
-          '⚡ Ritmo en rango aceptable, pero ajustado. Usa el pre-aviso por WhatsApp para que los clientes salgan rápido a la puerta y evitar saltos largos entre cuadras.'
+          '⚡ Ritmo en rango aceptable con algunas demoras. Recuerda usar los mensajes de WhatsApp rápido para no perder minutos esperando en puerta.'
       };
     }
 
     return {
       level: 'red',
-      badge: '🔴 RITMO BAJO (< 6 PAQ/H)',
+      badge: '🔴 RITMO BAJO (< 4.5 PAQ/H)',
       badgeBg: 'bg-rose-600 text-white',
       bgClass: highContrastSun
         ? 'bg-rose-100 border-rose-600 text-rose-950'
         : 'bg-rose-950/70 border-rose-500/60 text-rose-200',
-      message: `🚨 Alerta de rentabilidad: Promedio por debajo de 6 paquetes/hora (>10 min por entrega). La meta quincenal requiere mantener 10 paq/hora. Revisa si hay paquetes aislados que debas pasar a otra tanda para no quemar tiempo en desvíos.`
+      message: `⚠️ Ritmo bajo (< 4.5 paq/h). Hoy la calle estuvo pesada y el tiempo no rindió. Descansa y enfócate en tu desarrollo; mañana ajustamos la ruta o recuperamos terreno el fin de semana.`
     };
   };
 

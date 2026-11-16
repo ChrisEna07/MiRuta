@@ -130,10 +130,10 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
   const grossEarnedCOP = deliveredPkgs.reduce((acc, p) => acc + (p.rate || defaultRate), 0);
 
   const activeHours = activeDurationMs / 3600000;
-  const roundedPacePerHour = activeHours >= 0.05
-    ? Math.round(deliveredCount / activeHours)
-    : deliveredCount;
-  const pacePerHour = String(roundedPacePerHour);
+  const paceNumeric = activeHours >= 0.05
+    ? Number((deliveredCount / activeHours).toFixed(1))
+    : (deliveredCount > 0 ? Number(deliveredCount.toFixed(1)) : 0);
+  const pacePerHour = paceNumeric.toFixed(1);
 
   const handleStartShift = async () => {
     const s = await ensureShiftExists(todayShiftId);
@@ -543,28 +543,28 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
 
   const renderCloseShiftModal = () => {
     const effectiveHours = activeDurationMs / 3600000;
-    const roundedPaceInt = effectiveHours >= 0.05
-      ? Math.round(deliveredCount / effectiveHours)
-      : deliveredCount;
+    const paceDecimal = effectiveHours >= 0.05
+      ? Number((deliveredCount / effectiveHours).toFixed(1))
+      : (deliveredCount > 0 ? Number(deliveredCount.toFixed(1)) : 0);
 
     let evalColor = highContrastSun
       ? 'bg-rose-100 border-2 border-rose-600 text-rose-950'
       : 'bg-rose-950/90 border-2 border-rose-500 text-rose-200';
     let evalText =
-      '❌ Rendimiento muy por debajo de lo rentable. A este ritmo no lograrás la meta quincenal. Te aconsejo seriamente no seguir desgastándote en esto y enfocarte 100% en tu trabajo principal y tus prácticas de desarrollo.';
+      '⚠️ Ritmo Bajo. Hoy la calle estuvo pesada y el tiempo no rindió. Descansa y enfócate en tu desarrollo; mañana ajustamos la ruta o recuperamos terreno el fin de semana.';
 
-    if (roundedPaceInt >= 10) {
+    if (paceDecimal >= 6.5) {
       evalColor = highContrastSun
         ? 'bg-emerald-100 border-2 border-emerald-600 text-emerald-950'
         : 'bg-emerald-950/90 border-2 border-emerald-500 text-emerald-200';
       evalText =
-        '✅ Jornada Óptima. Estás cumpliendo el ritmo. Vas seguro hacia la meta de los $600.000 COP.';
-    } else if (roundedPaceInt >= 7) {
+        '✅ Jornada Óptima (Modo Part-Time). Lograste un excelente ritmo de noche. Mantén este paso en la semana y complementa el fin de semana, vas perfecto para los $600.000 COP.';
+    } else if (paceDecimal >= 4.5) {
       evalColor = highContrastSun
         ? 'bg-amber-100 border-2 border-amber-600 text-amber-950'
         : 'bg-amber-950/90 border-2 border-amber-500 text-amber-200';
       evalText =
-        '⚠️ Jornada Regular. Toca esforzarse más y agilizar el tiempo en las puertas si quieres alcanzar la meta.';
+        '🟡 Jornada Regular. Hubo algunas demoras, pero salvaste el turno. Recuerda usar los mensajes de WhatsApp rápido para no perder minutos esperando en puerta.';
     }
 
     return (
@@ -625,22 +625,22 @@ export const PilotModeView: React.FC<PilotModeViewProps> = ({
               </span>
             </div>
 
-            {/* 4. Promedio Paquetes/Hora (Entero Redondeado) */}
+            {/* 4. Promedio Paquetes/Hora (Con 1 Decimal) */}
             <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
               <span className="text-[10px] font-bold text-slate-400 block">RITMO PAQ/HORA</span>
               <p className="text-xl font-black text-blue-400 mt-0.5 font-mono">
-                {roundedPaceInt} <span className="text-xs font-bold text-slate-400">paq/h</span>
+                {paceDecimal.toFixed(1)} <span className="text-xs font-bold text-slate-400">paq/h</span>
               </p>
-              <span className="text-[9px] font-bold text-amber-300">
-                Meta: 10 paq/h
+              <span className="text-[9px] font-bold text-emerald-400">
+                Meta Part-Time: 6.5 paq/h
               </span>
             </div>
           </div>
 
-          {/* Evaluación Comparativa (Mensaje Honesto y Fuerte) v10.0 */}
+          {/* Evaluación Comparativa Part-Time (v10.1) */}
           <div className={`p-3.5 rounded-2xl border-2 space-y-1.5 shadow-lg ${evalColor}`}>
             <div className="flex items-center justify-between text-xs font-black uppercase">
-              <span>Evaluación de Desempeño ({roundedPaceInt} / 10 paq/h)</span>
+              <span>Evaluación Part-Time ({paceDecimal.toFixed(1)} / 6.5 paq/h)</span>
               <span>Meta $600k COP</span>
             </div>
             <p className="text-xs sm:text-sm font-black leading-snug">
