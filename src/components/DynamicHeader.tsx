@@ -13,6 +13,8 @@ import {
   Cloud,
   Loader2,
   Database,
+  Package,
+  Car,
 } from 'lucide-react';
 import { BIBLE_VERSES, type BibleVerse } from '../data/verses';
 import { getDefaultPackageRate, updatePackageRateSetting } from '../db/database';
@@ -24,11 +26,15 @@ import { useToast, useConfirm } from './ui/FeedbackSystem';
 interface DynamicHeaderProps {
   highContrastSun: boolean;
   onToggleContrast: () => void;
+  workMode: 'delivery' | 'transport';
+  onChangeWorkMode: (mode: 'delivery' | 'transport') => void;
 }
 
 export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
   highContrastSun,
   onToggleContrast,
+  workMode,
+  onChangeWorkMode,
 }) => {
   const toast = useToast();
   const { confirm } = useConfirm();
@@ -144,21 +150,28 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
                 </div>
 
                 <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTempRateInput(formatLiveCOPInput(String(currentRate)));
-                      setShowRateModal(true);
-                    }}
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition-colors whitespace-normal break-words leading-snug ${
-                      highContrastSun
-                        ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
-                        : 'bg-slate-800/90 border-slate-700 text-emerald-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <span>Tarifa {formatCOP(currentRate)}</span>
-                    <Pencil className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                  </button>
+                  {workMode === 'delivery' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTempRateInput(formatLiveCOPInput(String(currentRate)));
+                        setShowRateModal(true);
+                      }}
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md border flex items-center gap-1 transition-colors whitespace-normal break-words leading-snug cursor-pointer ${
+                        highContrastSun
+                          ? 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'
+                          : 'bg-slate-800/90 border-slate-700 text-emerald-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      <span>Tarifa {formatCOP(currentRate)}</span>
+                      <Pencil className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                    </button>
+                  ) : (
+                    <div className="text-[10px] font-black px-2 py-0.5 rounded-md border flex items-center gap-1 bg-amber-500/20 border-amber-500/40 text-amber-300">
+                      <Car className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                      <span>InDrive / Pasajeros</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -214,6 +227,44 @@ export const DynamicHeader: React.FC<DynamicHeaderProps> = ({
                 {highContrastSun ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
             </div>
+          </div>
+
+          {/* Selector de Modo de Trabajo (Hotfix v11.0: Arquitectura Multi-Modo) */}
+          <div
+            className={`mt-2 flex items-center justify-between gap-1 p-1 rounded-2xl border transition-all ${
+              highContrastSun
+                ? 'bg-slate-100 border-slate-300'
+                : 'bg-slate-950/70 border-slate-800'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => onChangeWorkMode('delivery')}
+              className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                workMode === 'delivery'
+                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-900/40 ring-1 ring-white/20 scale-[1.01]'
+                  : highContrastSun
+                  ? 'text-slate-600 hover:text-slate-900'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Package className="w-3.5 h-3.5" />
+              <span>📦 Mensajería</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeWorkMode('transport')}
+              className={`flex-1 py-1.5 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                workMode === 'transport'
+                  ? 'bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-slate-950 shadow-md shadow-amber-900/40 ring-1 ring-white/30 font-black scale-[1.01]'
+                  : highContrastSun
+                  ? 'text-slate-600 hover:text-slate-900'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Car className="w-3.5 h-3.5" />
+              <span>🚗 Transporte</span>
+            </button>
           </div>
 
           {/* Dynamic Greeting */}

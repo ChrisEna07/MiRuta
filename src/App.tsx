@@ -8,7 +8,8 @@ import {
   FileSpreadsheet,
   Settings,
   History,
-  X
+  X,
+  Car,
 } from 'lucide-react';
 import { db, getTodayShiftId, ensureShiftExists, type DeliveryPackage } from './db/database';
 import { seedMedellinDemoBatch } from './utils/demoSeeder';
@@ -20,6 +21,7 @@ import { RouteOptimizerView } from './components/RouteOptimizerView';
 import { TraceabilityHistoryView } from './components/TraceabilityHistoryView';
 import { QuincenaAccountingView } from './components/QuincenaAccountingView';
 import { SettingsBackupView } from './components/SettingsBackupView';
+import { TransportDashboardView } from './components/TransportDashboardView';
 import { ScannerModal } from './components/ScannerModal';
 import { DeliveryCheckoutScanner } from './components/DeliveryCheckoutScanner';
 import { ScannerTestLabModal } from './components/ScannerTestLabModal';
@@ -39,6 +41,21 @@ export function App() {
   const [searchModalOpen, setSearchModalOpen] = useState<boolean>(false);
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
   const [highContrastSun, setHighContrastSun] = useState<boolean>(false);
+  const [workMode, setWorkMode] = useState<'delivery' | 'transport'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('miruta_work_mode');
+      if (saved === 'transport' || saved === 'delivery') return saved;
+    }
+    return 'delivery';
+  });
+
+  const handleWorkModeChange = (mode: 'delivery' | 'transport') => {
+    setWorkMode(mode);
+    localStorage.setItem('miruta_work_mode', mode);
+    if (mode === 'transport' && activeTab === 'route') {
+      setActiveTab('pilot');
+    }
+  };
 
   const todayShiftId = getTodayShiftId();
 
@@ -95,15 +112,31 @@ export function App() {
         <DynamicHeader
           highContrastSun={highContrastSun}
           onToggleContrast={() => setHighContrastSun((prev) => !prev)}
+          workMode={workMode}
+          onChangeWorkMode={handleWorkModeChange}
         />
 
-        {/* Contenido Principal con Aislamiento Estricto por Vistas (v9.0) */}
+        {/* Contenido Principal con Aislamiento Estricto por Vistas (v9.0 / v11.0) */}
         <main className="mt-1">
           <AnimatePresence mode="wait">
-            {/* 1. PESTAÑA: ENTREGA / TAREAS (IMileTodayTasksCard + PilotModeView) */}
-            {activeTab === 'pilot' && (
+            {/* 1. MODO TRANSPORTE: DASHBOARD FINANCIERO Y CONTROL DE JORNADA (v11.0) */}
+            {activeTab === 'pilot' && workMode === 'transport' && (
               <motion.div
-                key="pilot"
+                key="pilot-transport"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.16 }}
+                className="space-y-3"
+              >
+                <TransportDashboardView highContrastSun={highContrastSun} />
+              </motion.div>
+            )}
+
+            {/* 1. MODO MENSAJERÍA: ENTREGA / TAREAS (IMileTodayTasksCard + PilotModeView) */}
+            {activeTab === 'pilot' && workMode === 'delivery' && (
+              <motion.div
+                key="pilot-delivery"
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
@@ -137,8 +170,8 @@ export function App() {
               </motion.div>
             )}
 
-            {/* 2. PESTAÑA: MAPA Y RUTA (RouteOptimizerView) */}
-            {activeTab === 'route' && (
+            {/* 2. PESTAÑA: MAPA Y RUTA (Solo en modo Mensajería) */}
+            {activeTab === 'route' && workMode === 'delivery' && (
               <motion.div
                 key="route"
                 initial={{ opacity: 0, y: 8 }}
@@ -303,7 +336,7 @@ export function App() {
           highContrastSun={highContrastSun}
         />
 
-        {/* Barra de Navegación Inferior Fija v9.0 (4 Pestañas Aisladas + Botón Buscar) */}
+        {/* Barra de Navegación Inferior Fija (Adaptativa Multi-Modo v11.0) */}
         <nav
           className={`fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-xl pb-safe transition-colors ${
             highContrastSun
@@ -312,54 +345,70 @@ export function App() {
           }`}
         >
           <div className="max-w-lg mx-auto px-4 py-2 relative">
-            <div className="grid grid-cols-4 items-center">
-              {/* Pestaña 1: Entrega / Piloto */}
+            <div
+              className={`grid items-center ${
+                workMode === 'transport' ? 'grid-cols-3' : 'grid-cols-4'
+              }`}
+            >
+              {/* Pestaña 1: Conductor (Transporte) o Entrega (Mensajería) */}
               <button
                 type="button"
                 onClick={() => setActiveTab('pilot')}
                 className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
                   activeTab === 'pilot'
-                    ? 'text-blue-400 font-black'
+                    ? workMode === 'transport'
+                      ? 'text-amber-400 font-black'
+                      : 'text-blue-400 font-black'
                     : 'text-slate-400 hover:text-slate-200 font-bold'
                 }`}
               >
                 <div
                   className={`p-1.5 rounded-xl transition-all ${
                     activeTab === 'pilot'
-                      ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
+                      ? workMode === 'transport'
+                        ? 'bg-amber-500/25 text-amber-400 scale-110 shadow-sm'
+                        : 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
                       : 'text-slate-400'
                   }`}
                 >
-                  <Send className="w-5 h-5 -rotate-45" />
-                </div>
-                <span className="text-[10px] leading-tight">Entrega</span>
-              </button>
-
-              {/* Pestaña 2: Mapa y Ruta */}
-              <button
-                type="button"
-                onClick={() => setActiveTab('route')}
-                className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
-                  activeTab === 'route'
-                    ? 'text-blue-400 font-black'
-                    : 'text-slate-400 hover:text-slate-200 font-bold'
-                }`}
-              >
-                <div
-                  className={`p-1.5 rounded-xl transition-all ${
-                    activeTab === 'route'
-                      ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
-                      : 'text-slate-400'
-                  }`}
-                >
-                  <MapPin className="w-5 h-5" />
+                  {workMode === 'transport' ? (
+                    <Car className="w-5 h-5" />
+                  ) : (
+                    <Send className="w-5 h-5 -rotate-45" />
+                  )}
                 </div>
                 <span className="text-[10px] leading-tight">
-                  Ruta {pendingCount > 0 ? `(${pendingCount})` : ''}
+                  {workMode === 'transport' ? 'Conductor' : 'Entrega'}
                 </span>
               </button>
 
-              {/* Pestaña 3: Quincena & Desempeño */}
+              {/* Pestaña 2: Mapa y Ruta (Solo visible en modo Mensajería) */}
+              {workMode === 'delivery' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('route')}
+                  className={`py-1 px-2 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer ${
+                    activeTab === 'route'
+                      ? 'text-blue-400 font-black'
+                      : 'text-slate-400 hover:text-slate-200 font-bold'
+                  }`}
+                >
+                  <div
+                    className={`p-1.5 rounded-xl transition-all ${
+                      activeTab === 'route'
+                        ? 'bg-blue-600/25 text-blue-400 scale-110 shadow-sm'
+                        : 'text-slate-400'
+                    }`}
+                  >
+                    <MapPin className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] leading-tight">
+                    Ruta {pendingCount > 0 ? `(${pendingCount})` : ''}
+                  </span>
+                </button>
+              )}
+
+              {/* Pestaña 3: Finanzas / Quincena */}
               <button
                 type="button"
                 onClick={() => setActiveTab('quincena')}
@@ -378,7 +427,9 @@ export function App() {
                 >
                   <FileSpreadsheet className="w-5 h-5" />
                 </div>
-                <span className="text-[10px] leading-tight">Quincena</span>
+                <span className="text-[10px] leading-tight">
+                  {workMode === 'transport' ? 'Finanzas' : 'Quincena'}
+                </span>
               </button>
 
               {/* Pestaña 4: Ajustes */}
@@ -404,19 +455,21 @@ export function App() {
               </button>
             </div>
 
-            {/* Botón Flotante de Búsqueda Rápida de Guía (#4) */}
-            <div className="absolute right-4 -top-12 sm:-top-13">
-              <button
-                type="button"
-                onClick={() => setSearchModalOpen(true)}
-                title="Búsqueda Rápida de Guías"
-                className="px-3.5 py-2 rounded-2xl bg-slate-900/95 hover:bg-slate-800 border border-amber-500/50 text-white font-black text-xs flex items-center gap-1.5 shadow-xl active:scale-95 transition-transform cursor-pointer"
-              >
-                <Search className="w-4 h-4 text-amber-400" />
-                <span>Buscar</span>
-                <span className="font-mono text-amber-400 font-black">#Guía</span>
-              </button>
-            </div>
+            {/* Botón Flotante de Búsqueda Rápida de Guía (Solo en modo Mensajería) */}
+            {workMode === 'delivery' && (
+              <div className="absolute right-4 -top-12 sm:-top-13">
+                <button
+                  type="button"
+                  onClick={() => setSearchModalOpen(true)}
+                  title="Búsqueda Rápida de Guías"
+                  className="px-3.5 py-2 rounded-2xl bg-slate-900/95 hover:bg-slate-800 border border-amber-500/50 text-white font-black text-xs flex items-center gap-1.5 shadow-xl active:scale-95 transition-transform cursor-pointer"
+                >
+                  <Search className="w-4 h-4 text-amber-400" />
+                  <span>Buscar</span>
+                  <span className="font-mono text-amber-400 font-black">#Guía</span>
+                </button>
+              </div>
+            )}
           </div>
         </nav>
       </div>

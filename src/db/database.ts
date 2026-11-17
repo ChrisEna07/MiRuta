@@ -48,6 +48,22 @@ export interface DeliveryPackage {
 
 export type ShiftStatus = 'active' | 'paused' | 'closed';
 
+export type TransportExpenseCategory =
+  | 'gasolina'
+  | 'comida'
+  | 'pinchazo'
+  | 'comision_app'
+  | 'otro';
+
+export interface TransportTransaction {
+  id: string;
+  type: 'income' | 'expense';
+  amount: number;
+  description: string;
+  timestamp: number;
+  category?: 'viaje' | TransportExpenseCategory;
+}
+
 export interface WorkShift {
   id: string;                   // YYYY-MM-DD
   date: string;                 // YYYY-MM-DD
@@ -67,6 +83,9 @@ export interface WorkShift {
   closedNetCOP?: number;
   sectorName: string;
   notes: string;
+  // Hotfix v11.0: Modo Transporte / Finanzas
+  targetGoal?: number;          // Meta financiera del día (COP)
+  transactions?: TransportTransaction[];
 }
 
 export type DeductionType =
@@ -697,4 +716,80 @@ export async function closeActiveShift(options: {
     fuelExpense,
     netCOP
   };
+}
+
+/**
+ * Hotfix v11.0: Módulo Transporte - Operaciones de Finanzas y Transacciones
+ */
+export async function addTransportTransaction(
+  shiftId: string,
+  transaction: Omit<TransportTransaction, 'id' | 'timestamp'>
+): Promise<TransportTransaction> {
+  const shift = await ensureShiftExists(shiftId);
+  const newTx: TransportTransaction = {
+    id: `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    timestamp: Date.now(),
+    ...transaction,
+  };
+  const updatedTransactions = [...(shift.transactions || []), newTx];
+  await db.shifts.update(shift.id, {
+    transactions: updatedTransactions,
+  });
+  return newTx;
+}
+
+export async function deleteTransportTransaction(
+  shiftId: string,
+  transactionId: string
+): Promise<void> {
+  const shift = await ensureShiftExists(shiftId);
+  const updated = (shift.transactions || []).filter((tx) => tx.id !== transactionId);
+  await db.shifts.update(shift.id, {
+    transactions: updated,
+  });
+}
+
+export async function updateShiftTargetGoal(
+  shiftId: string,
+  targetGoal: number
+): Promise<void> {
+  const shift = await ensureShiftExists(shiftId);
+  await db.shifts.update(shift.id, { targetGoal });
+}
+
+export async function closeTransportShift(options: {
+  shiftId: string;
+  effectiveDurationMs: number;
+}): Promise<WorkShift> {
+  const { shiftId, effectiveDurationMs } = options;
+  const endTime = Date.now();
+  const shift = await ensureShiftExists(shiftId);
+
+  const transactions = shift.transactions || [];
+  const totalIncome = transactions
+    .filter((t) => t.type === 'income')
+    .reduce((s, t) => s + t.amount, 0);
+  const totalExpense = transactions
+    .filter((t) => t.type === 'expense')
+    .reduce((s, t) => s + t.amount, 0);
+  const netEarnings = totalIncome - totalExpense;
+
+  await db.shifts.update(shift.id, {
+    status: 'closed',
+    isPaused: true,
+    endTime,
+    effectiveDurationMs,
+    closedGrossCOP: totalIncome,
+    fuelExpense: totalExpense,
+    closedNetCOP: netEarnings,
+  });
+
+  await createBackupSnapshot({
+    sessionName: `Cierre Conducción ${shiftId} (Neto: $${netEarnings} COP)`,
+    triggerType: 'shift_close',
+    autoDownloadFile: false,
+  });
+
+  const updated = await db.shifts.get(shift.id);
+  return updated || shift;
 }
