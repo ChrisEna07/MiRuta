@@ -36,14 +36,11 @@ import { generateAndShareQuincenaPDF } from '../utils/pdfReport';
 import { syncToSupabase } from '../services/supabaseSync';
 import { generateQuincenaAuditClaimText } from '../services/aiCopilotService';
 import { useToast, useConfirm } from './ui/FeedbackSystem';
-
-interface QuincenaAccountingViewProps {
-  highContrastSun: boolean;
-}
+import { TransportFinancesView } from './TransportFinancesView';
 
 type CutoffMode = 'q1' | 'q2' | 'custom';
 
-export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
+const DeliveryFinances: React.FC<{ highContrastSun: boolean }> = ({
   highContrastSun
 }) => {
   const toast = useToast();
@@ -1266,4 +1263,27 @@ export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
       )}
     </div>
   );
+};
+
+export interface QuincenaAccountingViewProps {
+  highContrastSun: boolean;
+  workMode?: 'delivery' | 'transport';
+}
+
+export const QuincenaAccountingView: React.FC<QuincenaAccountingViewProps> = ({
+  highContrastSun,
+  workMode,
+}) => {
+  const currentWorkMode =
+    workMode ||
+    (typeof window !== 'undefined'
+      ? (localStorage.getItem('miruta_work_mode') as 'delivery' | 'transport')
+      : 'delivery') ||
+    'delivery';
+
+  if (currentWorkMode === 'transport') {
+    return <TransportFinancesView highContrastSun={highContrastSun} />;
+  }
+
+  return <DeliveryFinances highContrastSun={highContrastSun} />;
 };

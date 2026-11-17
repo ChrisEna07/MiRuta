@@ -188,7 +188,7 @@ export function App() {
               </motion.div>
             )}
 
-            {/* 3. PESTAÑA: QUINCENA & DESEMPEÑO (ProfitabilityMeter + QuincenaAccountingView) */}
+            {/* 3. PESTAÑA: FINANZAS / QUINCENA & DESEMPEÑO (Aislamiento Multi-Modo v11.1) */}
             {activeTab === 'quincena' && (
               <motion.div
                 key="quincena"
@@ -198,15 +198,20 @@ export function App() {
                 transition={{ duration: 0.16 }}
                 className="space-y-3.5"
               >
-                {/* Semáforo de Desempeño, Ritmo paq/h y Meta $600k COP */}
-                <ProfitabilityMeter
-                  packages={todayPackages}
-                  shift={todayShift}
-                  highContrastSun={highContrastSun}
-                />
+                {/* Semáforo de Desempeño, Ritmo paq/h y Meta $600k COP (Solo en Mensajería) */}
+                {workMode === 'delivery' && (
+                  <ProfitabilityMeter
+                    packages={todayPackages}
+                    shift={todayShift}
+                    highContrastSun={highContrastSun}
+                  />
+                )}
 
-                {/* Auditoría y Liquidación Quincenal para Christian y PDF Sr. Juan */}
-                <QuincenaAccountingView highContrastSun={highContrastSun} />
+                {/* Auditoría Contable Aislada (Entrega de Paquetes o Conducción de Pasajeros) */}
+                <QuincenaAccountingView
+                  highContrastSun={highContrastSun}
+                  workMode={workMode}
+                />
               </motion.div>
             )}
 
